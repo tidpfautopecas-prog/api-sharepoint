@@ -1,0 +1,5 @@
+# Ignorar o arquivo que contém as senhas
+.env
+
+# Ignorar a pasta de dependências do Node.js
+node_modules
