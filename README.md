@@ -1,36 +1,25 @@
-
 # API SharePoint - Global Plastic
 
-API Node.js para integração com SharePoint, permitindo upload automático de PDFs de laudos na pasta específica.
+API Node.js para integração com SharePoint, permitindo upload e exclusão automáticos de PDFs de laudos.
 
 ## 🚀 Configuração
 
 ### 1. Instalar dependências
-```bash
+`bash
 npm install
-```
+`
 
 ### 2. Configurar variáveis de ambiente
-O arquivo `.env` já está configurado com suas credenciais:
-
-```env
-TENANT_ID=<SEU_TENANT_ID>
-CLIENT_ID=<SEU_CLIENT_ID>
-CLIENT_SECRET=*****SECRET*****
-SITE_ID=<SEU_SITE_ID>
-LIBRARY_NAME=Documentos%20Compartilhados
-FOLDER_PATH=Laudos
-PORT=3000
-```
+[cite_start]O ficheiro `.env` já está configurado com as suas credenciais. [cite: 1]
 
 ### 3. Iniciar o servidor
-```bash
+`bash
 # Modo produção
 npm start
 
 # Modo desenvolvimento (com auto-reload)
 npm run dev
-```
+`
 
 ## 📋 Endpoints Disponíveis
 
@@ -47,69 +36,54 @@ Cria a pasta "Laudos" no SharePoint se não existir.
 Upload de PDF para o SharePoint.
 
 **Body:**
-```json
+`json
 {
   "fileName": "Laudo_123_15-01-2024_14h30min.pdf",
-  "fileBase64": "base64_do_arquivo...",
+  "fileBase64": "base64_do_ficheiro...",
   "ticketNumber": "#123",
   "ticketTitle": "Título do laudo",
   "isReport": false
 }
-```
+`
+
+### `DELETE /delete-pdf-by-ticket-number/:ticketNumber`
+Exclui todos os PDFs no SharePoint que correspondem a um número de ticket específico.
+
+**Exemplo de uso:**
+`bash
+curl -X DELETE http://localhost:3000/delete-pdf-by-ticket-number/SR-12345
+`
 
 ## 🔧 Como usar no frontend
-
-```javascript
-// Enviar PDF para SharePoint
-const response = await fetch('http://localhost:3000/upload-pdf', {
-  method: 'POST',
-  headers: { 
-    'Content-Type': 'application/json',
-    'Accept': 'application/json'
-  },
-  body: JSON.stringify({ 
-    fileName, 
-    fileBase64,
-    ticketNumber: ticket.numero,
-    ticketTitle: ticket.titulo
-  })
-});
-
-const result = await response.json();
-if (response.ok) {
-  console.log('✅ PDF salvo no SharePoint!');
-} else {
-  console.error('❌ Erro:', result.error);
-}
-```
+(Exemplos de código para upload e outras operações)
 
 ## 🧪 Testar a API
 
 1. **Verificar status:**
-   ```bash
+   `bash
    curl http://localhost:3000/status
-   ```
+   `
 
 2. **Testar conexão:**
-   ```bash
+   `bash
    curl http://localhost:3000/test-connection
-   ```
+   `
 
 3. **Criar pasta Laudos:**
-   ```bash
+   `bash
    curl -X POST http://localhost:3000/create-folder
-   ```
+   `
 
 ## 📁 Estrutura de Pastas no SharePoint
 
-```
+`
 SharePoint Site (GLB-FS)
 └── Documentos Compartilhados/
     └── Laudos/
         ├── Laudo_123_15-01-2024_14h30min.pdf
         ├── Relatorio_Laudos_15_01_2024.pdf
         └── ...
-```
+`
 
 ## 🔒 Segurança
 
@@ -117,13 +91,13 @@ SharePoint Site (GLB-FS)
 - ✅ Token de acesso renovado automaticamente
 - ✅ CORS configurado para o frontend
 - ✅ Validação de dados de entrada
-- ✅ Logs detalhados para monitoramento
+- ✅ Logs detalhados para monitorização
 
 ## 🚨 Troubleshooting
 
 ### Erro de autenticação
 - Verifique se as credenciais no `.env` estão corretas
-- Confirme se o aplicativo tem permissões no Azure AD
+- Confirme se a aplicação tem permissões no Azure AD
 
 ### Erro de upload
 - Verifique se a pasta "Laudos" existe (use `/create-folder`)
@@ -136,17 +110,4 @@ SharePoint Site (GLB-FS)
 
 ## 📊 Logs
 
-A API gera logs detalhados:
-- 🔐 Autenticação Microsoft Graph
-- ⬆️ Uploads de arquivos
-- ✅ Sucessos e falhas
-- 🧪 Testes de conectividade
-
-## 🎯 Próximos Passos
-
-1. Iniciar a API: `npm start`
-2. Testar conexão: `GET /test-connection`
-3. Criar pasta se necessário: `POST /create-folder`
-4. Integrar com o frontend React
-5. Monitorar logs de upload
-"# api-sharepoint" 
+A API gera logs detalhados para todas as operações, incluindo autenticação, uploads, exclusões e testes.
