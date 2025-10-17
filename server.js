@@ -8,7 +8,6 @@ dotenv.config();
 
 const app = express();
 
-// Middlewares
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 
@@ -31,24 +30,33 @@ async function getAccessToken(retries = 3) {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
       const data = await res.json();
-      if (!data.access_token) {
-        throw new Error(`Erro na autenticação: ${data.error_description || data.error}`);
-      }
+      if (!data.access_token) throw new Error(`Erro na autenticação: ${data.error_description || data.error}`);
       return data.access_token;
     } catch (error) {
-      console.error(`❌ Tentativa ${i + 1} de obter token falhou:`, error.message);
       if (i === retries - 1) throw error;
       await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
     }
   }
 }
 
-function buildGraphUrl(path) {
-  const siteId = process.env.SITE_ID;
-  return `https://graph.microsoft.com/v1.0/sites/${siteId}/${path}`;
+// ✅ NOVA FUNÇÃO: Encontra o ID da biblioteca de documentos
+async function getDriveId(accessToken) {
+    const encodedLibraryName = encodeURIComponent(process.env.LIBRARY_NAME);
+    const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/drives`;
+    
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+    if (!res.ok) throw new Error(`Não foi possível encontrar as bibliotecas do site. Status: ${res.status}`);
+    
+    const { value: drives } = await res.json();
+    const library = drives.find(d => d.name === process.env.LIBRARY_NAME);
+    
+    if (!library) throw new Error(`A biblioteca de documentos chamada "${process.env.LIBRARY_NAME}" não foi encontrada no site.`);
+    
+    console.log(`✅ ID da Biblioteca "${library.name}" encontrado: ${library.id}`);
+    return library.id;
 }
 
-// ✅ NOVA ROTA PRINCIPAL PARA RESOLVER O ERRO 404
+
 app.get('/', (req, res) => {
     res.json({
       message: 'Hello from Global Plastic SharePoint API!',
@@ -62,24 +70,37 @@ app.post('/upload-pdf', async (req, res) => {
   if (!fileName || !fileBase64) {
     return res.status(400).json({ error: 'Dados obrigatórios ausentes' });
   }
+
   try {
+    console.log(`📄 A iniciar upload para: ${fileName}`);
     const accessToken = await getAccessToken();
-    const encodedLibrary = encodeURIComponent(process.env.LIBRARY_NAME);
+    
+    // ✅ PASSO 1: Obter o ID da drive (biblioteca) dinamicamente
+    const driveId = await getDriveId(accessToken);
+    
     const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
     const encodedFileName = encodeURIComponent(fileName);
-    const uploadPath = `drives/root:/${encodedLibrary}/${encodedFolder}/${encodedFileName}:/content`;
-    const uploadUrl = buildGraphUrl(uploadPath);
+
+    // ✅ PASSO 2: Construir o URL de upload correto usando o ID da drive
+    const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}/${encodedFileName}:/content`;
+    
+    console.log(`⬆️ A enviar para o URL correto: ${uploadUrl}`);
+
     const response = await fetch(uploadUrl, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/pdf' },
       body: Buffer.from(fileBase64, 'base64')
     });
+
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`SharePoint Error ${response.status}: ${errorText}`);
     }
+
     const result = await response.json();
+    console.log(`✅ Upload concluído com sucesso para: ${result.webUrl}`);
     res.status(200).json({ success: true, sharePointUrl: result.webUrl });
+
   } catch (error) {
     console.error(`❌ Erro no upload:`, error.message);
     res.status(500).json({ success: false, error: 'Falha ao enviar PDF', details: error.message });
@@ -89,12 +110,13 @@ app.post('/upload-pdf', async (req, res) => {
 app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
     const { ticketNumber } = req.params;
     if (!ticketNumber) return res.status(400).json({ error: 'Número do ticket é obrigatório.' });
+
     try {
         const accessToken = await getAccessToken();
-        const encodedLibrary = encodeURIComponent(process.env.LIBRARY_NAME);
+        const driveId = await getDriveId(accessToken);
         const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
-        const listPath = `drives/root:/${encodedLibrary}/${encodedFolder}:/children`;
-        const listUrl = buildGraphUrl(listPath);
+        
+        const listUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}:/children`;
         
         const listResponse = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
         if (!listResponse.ok) throw new Error(`Não foi possível listar os ficheiros. Status: ${listResponse.status}`);
@@ -108,10 +130,10 @@ app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
         }
 
         const deletePromises = filesToDelete.map(file => {
-            const deletePath = `drives/root/items/${file.id}`;
-            const deleteUrl = buildGraphUrl(deletePath);
+            const deleteUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${file.id}`;
             return fetch(deleteUrl, { method: 'DELETE', headers: { 'Authorization': `Bearer ${accessToken}` } });
         });
+
         await Promise.all(deletePromises);
         res.status(200).json({ success: true, message: `${filesToDelete.length} PDF(s) excluídos com sucesso.` });
     } catch (error) {
