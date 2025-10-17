@@ -39,23 +39,26 @@ async function getAccessToken(retries = 3) {
   }
 }
 
-// ✅ NOVA FUNÇÃO: Encontra o ID da biblioteca de documentos
+// ✅ NOVA FUNÇÃO: Encontra o ID da biblioteca de documentos (Drive)
 async function getDriveId(accessToken) {
-    const encodedLibraryName = encodeURIComponent(process.env.LIBRARY_NAME);
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/drives`;
     
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Não foi possível encontrar as bibliotecas do site. Status: ${res.status}`);
+    if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Não foi possível encontrar as bibliotecas do site. Status: ${res.status} - ${errorText}`);
+    }
     
     const { value: drives } = await res.json();
     const library = drives.find(d => d.name === process.env.LIBRARY_NAME);
     
-    if (!library) throw new Error(`A biblioteca de documentos chamada "${process.env.LIBRARY_NAME}" não foi encontrada no site.`);
+    if (!library) {
+        throw new Error(`A biblioteca de documentos chamada "${process.env.LIBRARY_NAME}" não foi encontrada no site.`);
+    }
     
     console.log(`✅ ID da Biblioteca "${library.name}" encontrado: ${library.id}`);
     return library.id;
 }
-
 
 app.get('/', (req, res) => {
     res.json({
@@ -75,13 +78,13 @@ app.post('/upload-pdf', async (req, res) => {
     console.log(`📄 A iniciar upload para: ${fileName}`);
     const accessToken = await getAccessToken();
     
-    // ✅ PASSO 1: Obter o ID da drive (biblioteca) dinamicamente
+    // PASSO 1: Obter o ID da drive (biblioteca) dinamicamente
     const driveId = await getDriveId(accessToken);
     
     const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
     const encodedFileName = encodeURIComponent(fileName);
 
-    // ✅ PASSO 2: Construir o URL de upload correto usando o ID da drive
+    // PASSO 2: Construir o URL de upload correto usando o ID da drive
     const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}/${encodedFileName}:/content`;
     
     console.log(`⬆️ A enviar para o URL correto: ${uploadUrl}`);
