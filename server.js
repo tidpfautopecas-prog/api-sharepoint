@@ -14,62 +14,39 @@ app.use(bodyParser.json({ limit: '50mb' }));
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
 console.log(`📁 Site: ${process.env.SITE_ID}`);
 console.log(`📂 Biblioteca: ${process.env.LIBRARY_NAME}`);
-console.log(`📄 Lista: ${process.env.LIST_NAME}`);
+console.log(`📄 Lista: ${process.env.LIST_NAME}`); // Deve ser "Laudo"
 console.log(`📍 Pasta: ${process.env.FOLDER_PATH}`);
 
 // =================================================================================
-// ⚡⚡⚡ ATENÇÃO AQUI: CORRIJA ESTE MAPEAMENTO ⚡⚡⚡
-// =================================================================================
-// Vá às Configurações da sua lista "Laudo" e encontre o Nome Interno de cada coluna
-// (no URL, depois de &Field=) e substitua os valores à esquerda.
-const COLUMN_MAPPING = {
-    // O 'Title' é (geralmente) obrigatório.
-    'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
-    
-    // O log diz que 'TicketNumber' está errado. 
-    // Substitua 'NOME_INTERNO_TICKET' pelo nome real.
-    'NOME_INTERNO_TICKET': (row) => row['N° do ticket'],
-    
-    // Substitua 'NOME_INTERNO_CLIENTE' pelo nome real.
-    'NOME_INTERNO_CLIENTE': (row) => row['Nome do Cliente'],
-    
-    // 'Item' (se o nome for só "Item", o interno é 'Item' mesmo)
-    'Item': (row) => row.Item,
-    
-    // 'Qtde' (se o nome for só "Qtde", o interno é 'Qtde')
-    // O log 'image_9d33da.png' mostrou que a sua coluna é do tipo Texto, 
-    // por isso o 'String()' está correto.
-    'Qtde': (row) => String(row.Qtde),
-    
-    // 'Motivo' (se o nome for só "Motivo", o interno é 'Motivo')
-    'Motivo': (row) => row.Motivo,
-    
-    // Substitua 'NOME_INTERNO_ORIGEM' pelo nome real.
-    'NOME_INTERNO_ORIGEM': (row) => row['Origem do defeito'],
-    
-    // Substitua 'NOME_INTERNO_DISPOSICAO' pelo nome real.
-    'NOME_INTERNO_DISPOSICAO': (row) => row.Disposição,
-    
-    // Substitua 'NOME_INTERNO_PECAS' pelo nome real.
-    'NOME_INTERNO_PECAS': (row) => row['Disposição das peças'],
-    
-    // Substitua 'NOME_INTERNO_DATA' pelo nome real.
-    'NOME_INTERNO_DATA': (row) => row['Data de Geração'],
-};
-// =================================================================================
-// Definições das colunas (SÓ USADO SE A LISTA NÃO EXISTIR)
+// ESTRUTURA DAS COLUNAS DA LISTA
 // =================================================================================
 const LIST_COLUMNS = [
     { "name": "TicketNumber", "displayName": "N° do ticket", "text": {} },
     { "name": "CustomerName", "displayName": "Nome do Cliente", "text": {} },
     { "name": "Item", "displayName": "Item", "text": {} },
-    { "name": "Qtde", "displayName": "Qtde", "text": {} },
+    // ✅ Corrigido para 'text' baseado em logs anteriores
+    { "name": "Qtde", "displayName": "Qtde", "text": {} }, 
     { "name": "Motivo", "displayName": "Motivo", "text": {} },
     { "name": "OriginDefect", "displayName": "Origem do defeito", "text": {} },
     { "name": "Disposition", "displayName": "Disposição", "text": {} },
     { "name": "PiecesDisposition", "displayName": "Disposição das peças", "text": {} },
     { "name": "GenerationDate", "displayName": "Data de Geração", "text": {} }
 ];
+
+// Mapeamento dos dados do frontend para os nomes internos
+const COLUMN_MAPPING = {
+    // Usamos os nomes internos definidos acima em LIST_COLUMNS
+    'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
+    'TicketNumber': (row) => row['N° do ticket'],
+    'CustomerName': (row) => row['Nome do Cliente'],
+    'Item': (row) => row.Item,
+    'Qtde': (row) => String(row.Qtde), // Força para String
+    'Motivo': (row) => row.Motivo,
+    'OriginDefect': (row) => row['Origem do defeito'],
+    'Disposition': (row) => row.Disposição,
+    'PiecesDisposition': (row) => row['Disposição das peças'],
+    'GenerationDate': (row) => row['Data de Geração'],
+};
 // =================================================================================
 
 
@@ -112,13 +89,7 @@ async function getDriveId(accessToken) {
     return library.id;
 }
 
-// (O resto do código da API - getOrCreateListId, createSharePointList, addColumnsToList, app.get, app.post('/upload-pdf'), etc. - permanece O MESMO)
-
-// ... (Cole todo o resto do código da API anterior aqui) ...
-
-// A função app.post('/upload-list-data') JÁ ESTÁ CORRETA,
-// pois ela usa o COLUMN_MAPPING que você vai corrigir acima.
-
+// ✅ CORRIGIDO: Cria a lista (Etapa 1)
 async function createSharePointList(accessToken) {
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists`;
 
@@ -146,17 +117,26 @@ async function createSharePointList(accessToken) {
     return newList.id;
 }
 
-async function addColumnsToList(accessToken, listId) {
-    console.log(`... A adicionar colunas à lista ${listId}...`);
+// ✅ CORRIGIDO: Adiciona colunas a uma lista (Etapa 2)
+// Recebe a lista de colunas a adicionar
+async function addColumnsToList(accessToken, listId, columnsToAdd) {
+    console.log(`... A adicionar ${columnsToAdd.length} colunas em falta à lista ${listId}...`);
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/columns`;
     
-    for (const column of LIST_COLUMNS) {
+    for (const column of columnsToAdd) {
         try {
+            // Remove 'displayName' se for igual a 'name' (pode causar conflito em alguns tipos)
+            const columnBody = { ...column };
+            if (columnBody.displayName === columnBody.name) {
+                delete columnBody.displayName;
+            }
+
             const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify(column)
+                body: JSON.stringify(columnBody)
             });
+            
             if (!res.ok) {
                 const errorText = await res.text();
                 console.warn(`Aviso ao adicionar coluna "${column.name}": ${errorText}. A continuar...`);
@@ -170,6 +150,8 @@ async function addColumnsToList(accessToken, listId) {
     console.log('✅ Adição de colunas concluída.');
 }
 
+
+// ✅ FUNÇÃO ATUALIZADA: Lógica robusta para encontrar ou criar/atualizar a lista
 async function getOrCreateListId(accessToken) {
     const listName = process.env.LIST_NAME;
     if (!listName) {
@@ -187,15 +169,42 @@ async function getOrCreateListId(accessToken) {
     const { value: lists } = await res.json();
     
     if (lists.length > 0) {
-        console.log(`✅ ID da Lista "${lists[0].displayName}" encontrado: ${lists[0].id}`);
-        return lists[0].id;
+        // --- LISTA ENCONTRADA ---
+        const listId = lists[0].id;
+        console.log(`✅ ID da Lista "${lists[0].displayName}" encontrado: ${listId}`);
+
+        // --- NOVA VERIFICAÇÃO ---
+        // Agora, verifica se as colunas existem na lista encontrada
+        const columnsUrl = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/columns`;
+        const columnsRes = await fetch(columnsUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+        if (!columnsRes.ok) {
+             throw new Error(`Não foi possível ler as colunas da lista ${listId}.`);
+        }
+        
+        const { value: existingColumns } = await columnsRes.json();
+        const existingColumnNames = existingColumns.map(c => c.name);
+        
+        // Compara as colunas que DEFINIMOS com as colunas EXISTENTES
+        const missingColumns = LIST_COLUMNS.filter(c => !existingColumnNames.includes(c.name));
+        
+        if (missingColumns.length > 0) {
+            console.warn(`A lista "${listName}" foi encontrada, mas faltam ${missingColumns.length} colunas.`);
+            await addColumnsToList(accessToken, listId, missingColumns); // Adiciona as colunas em falta
+        } else {
+            console.log('... Colunas da lista validadas.');
+        }
+        
+        return listId;
+
     } else {
+        // --- LISTA NÃO ENCONTRADA ---
         console.warn(`A Lista "${process.env.LIST_NAME}" não foi encontrada. A tentar criar...`);
-        const newListId = await createSharePointList(accessToken); 
-        await addColumnsToList(accessToken, newListId); 
+        const newListId = await createSharePointList(accessToken); // Etapa 1: Criar Lista
+        await addColumnsToList(accessToken, newListId, LIST_COLUMNS); // Etapa 2: Adicionar TODAS as colunas
         return newListId;
     }
 }
+
 
 app.get('/', (req, res) => {
     res.json({
@@ -206,8 +215,8 @@ app.get('/', (req, res) => {
 });
 
 app.post('/upload-pdf', async (req, res) => {
-  const { fileName, fileBase4 } = req.body;
-  if (!fileName || !fileBase4) {
+  const { fileName, fileBase64 } = req.body;
+  if (!fileName || !fileBase64) {
     return res.status(400).json({ error: 'Dados obrigatórios ausentes' });
   }
 
@@ -224,7 +233,7 @@ app.post('/upload-pdf', async (req, res) => {
     const response = await fetch(uploadUrl, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/pdf' },
-      body: Buffer.from(fileBase4, 'base64')
+      body: Buffer.from(fileBase64, 'base64')
     });
 
     if (!response.ok) {
@@ -242,6 +251,9 @@ app.post('/upload-pdf', async (req, res) => {
   }
 });
 
+// =================================================================================
+// ENDPOINT DA LISTA (Usa a lógica de mapeamento corrigida)
+// =================================================================================
 app.post('/upload-list-data', async (req, res) => {
     const { listData } = req.body;
     
@@ -252,21 +264,20 @@ app.post('/upload-list-data', async (req, res) => {
     try {
         console.log(`📋 A iniciar inserção de ${listData.length} itens na Lista do SharePoint.`);
         const accessToken = await getAccessToken();
+        // Passo 1: Garante que a lista existe E tem as colunas
         const listId = await getOrCreateListId(accessToken); 
 
         const listItemsUrl = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items`;
 
         const insertionPromises = listData.map(async (row) => {
             
-            // Esta função agora usa o COLUMN_MAPPING que você corrigiu no topo.
+            // Passo 2: Mapeia os dados usando o MAPPING (agora deve estar correto)
             const itemFields = {};
             for (const key in COLUMN_MAPPING) {
-                // Verifica se a chave do mapping existe no objeto (ex: 'Title', 'NOME_INTERNO_TICKET')
-                if (Object.prototype.hasOwnProperty.call(COLUMN_MAPPING, key)) {
-                     itemFields[key] = COLUMN_MAPPING[key](row);
-                }
+                itemFields[key] = COLUMN_MAPPING[key](row);
             }
             
+            // Passo 3: Envia o item para o SharePoint
             const itemResponse = await fetch(listItemsUrl, {
                 method: 'POST',
                 headers: { 
