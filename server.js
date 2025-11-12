@@ -14,7 +14,7 @@ app.use(bodyParser.json({ limit: '50mb' }));
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
 console.log(`📁 Site: ${process.env.SITE_ID}`);
 console.log(`📂 Biblioteca: ${process.env.LIBRARY_NAME}`);
-console.log(`📄 Lista: ${process.env.LIST_NAME}`);
+console.log(`📄 Lista: ${process.env.LIST_NAME}`); // Deve estar definido como "Laudo" no Render
 console.log(`📍 Pasta: ${process.env.FOLDER_PATH}`);
 
 // =================================================================================
@@ -24,8 +24,7 @@ const LIST_COLUMNS = [
     { "name": "TicketNumber", "displayName": "N° do ticket", "text": {} },
     { "name": "CustomerName", "displayName": "Nome do Cliente", "text": {} },
     { "name": "Item", "displayName": "Item", "text": {} },
-    // ✅ CORRIGIDO: Alterado de "number: {}" para "text: {}"
-    // para corresponder à sua lista existente
+    // ✅ CORRIGIDO (baseado no log 'image_9d33da.png'): 'Qtde' é Texto
     { "name": "Qtde", "displayName": "Qtde", "text": {} },
     { "name": "Motivo", "displayName": "Motivo", "text": {} },
     { "name": "OriginDefect", "displayName": "Origem do defeito", "text": {} },
@@ -40,8 +39,7 @@ const COLUMN_MAPPING = {
     'TicketNumber': (row) => row['N° do ticket'],
     'CustomerName': (row) => row['Nome do Cliente'],
     'Item': (row) => row.Item,
-    // ✅ CORRIGIDO: Convertendo explicitamente a quantidade para String
-    // para corresponder à sua coluna de Texto
+    // ✅ CORRIGIDO (baseado no log 'image_9d33da.png'): Força 'Qtde' para String
     'Qtde': (row) => String(row.Qtde),
     'Motivo': (row) => row.Motivo,
     'OriginDefect': (row) => row['Origem do defeito'],
@@ -91,14 +89,12 @@ async function getDriveId(accessToken) {
     return library.id;
 }
 
-// ✅ NOVA FUNÇÃO: Cria a Lista do SharePoint se ela não existir
+// ✅ CORRIGIDO: Esta função agora APENAS cria a lista (sem colunas)
 async function createSharePointList(accessToken) {
-    console.warn(`A Lista "${process.env.LIST_NAME}" não foi encontrada. A tentar criar...`);
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists`;
 
     const listBody = {
         displayName: process.env.LIST_NAME,
-        columns: LIST_COLUMNS, // Usa a definição de colunas corrigida
         list: {
             template: "genericList"
         }
@@ -112,7 +108,7 @@ async function createSharePointList(accessToken) {
 
     if (!res.ok) {
         const errorText = await res.text();
-        console.error("❌ FALHA CRÍTICA AO CRIAR A LISTA:", errorText);
+        console.error("❌ FALHA CRÍTICA AO CRIAR A LISTA (Etapa 1):", errorText);
         throw new Error(`Falha ao criar a Lista no SharePoint. Status: ${res.status}. ${errorText}`);
     }
 
@@ -121,14 +117,41 @@ async function createSharePointList(accessToken) {
     return newList.id;
 }
 
-// ✅ FUNÇÃO ATUALIZADA: Tenta encontrar a lista ou cria-a
+// ✅ NOVA FUNÇÃO: Adiciona as colunas à lista APÓS a criação
+async function addColumnsToList(accessToken, listId) {
+    console.log(`... A adicionar colunas à lista ${listId}...`);
+    const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/columns`;
+    
+    // O 'Title' já existe, não precisamos adicioná-lo
+    for (const column of LIST_COLUMNS) {
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(column)
+            });
+            if (!res.ok) {
+                const errorText = await res.text();
+                // Loga um aviso mas continua tentando as outras colunas
+                console.warn(`Aviso ao adicionar coluna "${column.name}": ${errorText}. A continuar...`);
+            } else {
+                console.log(`... Coluna "${column.name}" adicionada.`);
+            }
+        } catch (error) {
+            console.error(`Erro ao adicionar coluna "${column.name}": ${error.message}`);
+        }
+    }
+    console.log('✅ Adição de colunas concluída.');
+}
+
+
+// ✅ FUNÇÃO ATUALIZADA: Tenta encontrar a lista ou cria-a em etapas
 async function getOrCreateListId(accessToken) {
     const listName = process.env.LIST_NAME;
     if (!listName) {
         throw new Error("Variável de ambiente LIST_NAME não está definida.");
     }
     
-    // Tenta encontrar a lista pelo nome de exibição
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
     
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
@@ -144,8 +167,11 @@ async function getOrCreateListId(accessToken) {
         console.log(`✅ ID da Lista "${lists[0].displayName}" encontrado: ${lists[0].id}`);
         return lists[0].id;
     } else {
-        // Lista NÃO encontrada, vamos criar
-        return await createSharePointList(accessToken);
+        // Lista NÃO encontrada, vamos criar em etapas
+        console.warn(`A Lista "${process.env.LIST_NAME}" não foi encontrada. A tentar criar...`);
+        const newListId = await createSharePointList(accessToken); // Etapa 1: Criar Lista
+        await addColumnsToList(accessToken, newListId); // Etapa 2: Adicionar Colunas
+        return newListId;
     }
 }
 
@@ -196,7 +222,7 @@ app.post('/upload-pdf', async (req, res) => {
 });
 
 // =================================================================================
-// ⚡ ENDPOINT DA LISTA (AGORA CORRIGIDO) ⚡
+// ENDPOINT DA LISTA (Usando a nova lógica de criação robusta)
 // =================================================================================
 app.post('/upload-list-data', async (req, res) => {
     const { listData } = req.body;
@@ -208,7 +234,7 @@ app.post('/upload-list-data', async (req, res) => {
     try {
         console.log(`📋 A iniciar inserção de ${listData.length} itens na Lista do SharePoint.`);
         const accessToken = await getAccessToken();
-        // Passo 1: Garante que a lista existe (encontra ou cria)
+        // Passo 1: Garante que a lista existe (encontra ou cria em etapas)
         const listId = await getOrCreateListId(accessToken); 
 
         const listItemsUrl = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items`;
