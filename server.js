@@ -14,19 +14,19 @@ app.use(bodyParser.json({ limit: '50mb' }));
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
 console.log(`📁 Site: ${process.env.SITE_ID}`);
 console.log(`📂 Biblioteca: ${process.env.LIBRARY_NAME}`);
-console.log(`📄 Lista: ${process.env.LIST_NAME}`); // ✅ Garanta que esta variável de ambiente exista!
+console.log(`📄 Lista: ${process.env.LIST_NAME}`);
 console.log(`📍 Pasta: ${process.env.FOLDER_PATH}`);
 
 // =================================================================================
 // ESTRUTURA DAS COLUNAS DA LISTA
-// Estes são os nomes internos que a API irá criar e usar.
 // =================================================================================
 const LIST_COLUMNS = [
-    // O 'Title' já existe, não precisamos de o criar.
     { "name": "TicketNumber", "displayName": "N° do ticket", "text": {} },
     { "name": "CustomerName", "displayName": "Nome do Cliente", "text": {} },
     { "name": "Item", "displayName": "Item", "text": {} },
-    { "name": "Qtde", "displayName": "Qtde", "number": {} }, // Definido como Número
+    // ✅ CORRIGIDO: Alterado de "number: {}" para "text: {}"
+    // para corresponder à sua lista existente
+    { "name": "Qtde", "displayName": "Qtde", "text": {} },
     { "name": "Motivo", "displayName": "Motivo", "text": {} },
     { "name": "OriginDefect", "displayName": "Origem do defeito", "text": {} },
     { "name": "Disposition", "displayName": "Disposição", "text": {} },
@@ -40,7 +40,9 @@ const COLUMN_MAPPING = {
     'TicketNumber': (row) => row['N° do ticket'],
     'CustomerName': (row) => row['Nome do Cliente'],
     'Item': (row) => row.Item,
-    'Qtde': (row) => row.Qtde,
+    // ✅ CORRIGIDO: Convertendo explicitamente a quantidade para String
+    // para corresponder à sua coluna de Texto
+    'Qtde': (row) => String(row.Qtde),
     'Motivo': (row) => row.Motivo,
     'OriginDefect': (row) => row['Origem do defeito'],
     'Disposition': (row) => row.Disposição,
@@ -96,7 +98,7 @@ async function createSharePointList(accessToken) {
 
     const listBody = {
         displayName: process.env.LIST_NAME,
-        columns: LIST_COLUMNS,
+        columns: LIST_COLUMNS, // Usa a definição de colunas corrigida
         list: {
             template: "genericList"
         }
@@ -194,7 +196,7 @@ app.post('/upload-pdf', async (req, res) => {
 });
 
 // =================================================================================
-// ⚡ ENDPOINT DA LISTA (AGORA ROBUSTO) ⚡
+// ⚡ ENDPOINT DA LISTA (AGORA CORRIGIDO) ⚡
 // =================================================================================
 app.post('/upload-list-data', async (req, res) => {
     const { listData } = req.body;
@@ -213,7 +215,7 @@ app.post('/upload-list-data', async (req, res) => {
 
         const insertionPromises = listData.map(async (row) => {
             
-            // Passo 2: Mapeia os dados do frontend para os nomes internos definidos
+            // Passo 2: Mapeia os dados usando o MAPPING CORRIGIDO
             const itemFields = {};
             for (const key in COLUMN_MAPPING) {
                 itemFields[key] = COLUMN_MAPPING[key](row);
@@ -231,7 +233,6 @@ app.post('/upload-list-data', async (req, res) => {
 
             if (!itemResponse.ok) {
                 const errorText = await itemResponse.text();
-                // Este log é crucial se o mapeamento ainda falhar
                 console.error(`Detalhe do Erro SharePoint (Item): ${errorText}`);
                 throw new Error(`Erro ao inserir item na Lista. Status: ${itemResponse.status}.`);
             }
