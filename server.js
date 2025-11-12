@@ -14,7 +14,7 @@ app.use(bodyParser.json({ limit: '50mb' }));
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
 console.log(`📁 Site: ${process.env.SITE_ID}`);
 console.log(`📂 Biblioteca: ${process.env.LIBRARY_NAME}`);
-console.log(`📄 Lista: ${process.env.LIST_NAME}`); // ✅ NOVO LOG
+console.log(`📄 Lista: ${process.env.LIST_NAME}`); // ✅ Garanta que esta variável de ambiente exista no Render
 console.log(`📍 Pasta: ${process.env.FOLDER_PATH}`);
 
 async function getAccessToken(retries = 3) {
@@ -106,14 +106,9 @@ app.post('/upload-pdf', async (req, res) => {
   try {
     console.log(`📄 A iniciar upload para: ${fileName}`);
     const accessToken = await getAccessToken();
-    
-    // PASSO 1: Obter o ID da drive (biblioteca) dinamicamente
     const driveId = await getDriveId(accessToken);
-    
     const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
     const encodedFileName = encodeURIComponent(fileName);
-
-    // PASSO 2: Construir o URL de upload correto usando o ID da drive
     const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}/${encodedFileName}:/content`;
     
     console.log(`⬆️ A enviar para o URL correto: ${uploadUrl}`);
@@ -139,7 +134,7 @@ app.post('/upload-pdf', async (req, res) => {
   }
 });
 
-// ✅ NOVO ENDPOINT: Rota para receber e inserir os dados da Lista do SharePoint
+// ✅ ENDPOINT NOVO E CORRIGIDO: Rota para receber e inserir os dados da Lista
 app.post('/upload-list-data', async (req, res) => {
     const { listData } = req.body;
     
@@ -154,25 +149,28 @@ app.post('/upload-list-data', async (req, res) => {
 
         const listItemsUrl = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items`;
 
-        // Array para guardar as promessas de inserção de cada linha
         const insertionPromises = listData.map(async (row) => {
-            // Cria um objeto 'fields' que será inserido no item da lista
-            const itemFields = {
-                // ATENÇÃO: É comum o campo principal da lista ser o 'Title' (Título).
-                // Use a convenção que você precisar aqui.
-                'Title': row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo, 
-                // Os demais campos são passados diretamente
-                ...row
-            };
             
-            // Remove campos que você já tratou ou que não são colunas da lista
-            delete itemFields['N° do ticket'];
-            delete itemFields['Nome do Cliente'];
-            delete itemFields['Data de Geração'];
-
-            // NOTA IMPORTANTE: Para campos com espaços ou caracteres especiais (ex: 'N° do ticket'),
-            // você PODE precisar usar o Internal Name do SharePoint.
-            // Exemplo: 'TicketNumber': row['N° do ticket']
+            // ⭐⭐⭐ ATENÇÃO AQUI: MAPEAMENTO DE NOMES INTERNOS ⭐⭐⭐
+            // Os nomes à ESQUERDA (ex: 'TicketNumber') são SUGESTÕES.
+            // Substitua-os pelos Nomes Internos REAIS da sua lista do SharePoint.
+            const itemFields = {
+                // 'Title' é (geralmente) obrigatório. Mapeie para algo útil.
+                'Title': row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo, 
+                
+                // --- AJUSTE ESTES NOMES INTERNOS ---
+                // 'NomeInternoDaSuaLista': row['NomeDoFrontend']
+                
+                'TicketNumber': row['N° do ticket'],        // Sugestão para 'N° do ticket'
+                'CustomerName': row['Nome do Cliente'],  // Sugestão para 'Nome do Cliente'
+                'Item': row.Item,                        // Sugestão para 'Item'
+                'Qtde': row.Qtde,                        // Sugestão para 'Qtde'
+                'Motivo': row.Motivo,                    // Sugestão para 'Motivo'
+                'OrigemDefeito': row['Origem do defeito'], // Sugestão para 'Origem do defeito'
+                'Disposicao': row.Disposição,              // Sugestão para 'Disposição'
+                'DisposicaoPecas': row['Disposição das peças'], // Sugestão para 'Disposição das peças'
+                'GenerationDate': row['Data de Geração'], // Sugestão para 'Data de Geração'
+            };
             
             const itemResponse = await fetch(listItemsUrl, {
                 method: 'POST',
@@ -184,8 +182,10 @@ app.post('/upload-list-data', async (req, res) => {
             });
 
             if (!itemResponse.ok) {
+                // Log detalhado para depuração
                 const errorText = await itemResponse.text();
-                throw new Error(`Erro ao inserir item na Lista. Status: ${itemResponse.status}. Detalhes: ${errorText}`);
+                console.error(`Detalhe do Erro SharePoint para o Ticket ${row['N° do ticket']}:`, errorText);
+                throw new Error(`Erro ao inserir item na Lista. Status: ${itemResponse.status}. Verifique os Nomes Internos das colunas.`);
             }
             return itemResponse.json();
         });
@@ -202,6 +202,7 @@ app.post('/upload-list-data', async (req, res) => {
 });
 
 
+// ✅ ENDPOINT DE EXCLUSÃO (EXISTENTE)
 app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
     const { ticketNumber } = req.params;
     if (!ticketNumber) return res.status(400).json({ error: 'Número do ticket é obrigatório.' });
