@@ -8,7 +8,7 @@ dotenv.config();
 
 const app = express();
 
-// Configuração de CORS para aceitar requisições do seu App
+// Configuração de CORS
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -18,19 +18,19 @@ app.use(cors({
 
 app.options('*', cors()); 
 
-// Aumenta o limite para aceitar base64 grandes (PDFs)
+// Limite aumentado para aceitar PDFs
 app.use(bodyParser.json({ limit: '50mb' }));
 
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
 
 // =================================================================================
-// 📋 MAPEAMENTO ATUALIZADO (Nomes Internos: Foto1, Foto2...)
+// 📋 MAPEAMENTO ATUALIZADO (Inclui Data de Geração)
 // =================================================================================
 const COLUMN_MAPPING = {
-    // Título (Padrão) - Combinação para facilitar busca
+    // Título (Padrão)
     'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
     
-    // Campos existentes (Verifique se os nomes internos batem com o seu SharePoint)
+    // Campos existentes
     'N_x00b0_doticket': (row) => row['N° do ticket'],
     'NomedoCliente': (row) => row['Nome do Cliente'],
     'Item': (row) => row.Item,
@@ -40,8 +40,11 @@ const COLUMN_MAPPING = {
     'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
     'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
 
-    // ✅ MAPEAMENTO CORRIGIDO DAS FOTOS
-    // Baseado no seu input "&Field=Foto1", os nomes internos não têm espaço.
+    // ✅ NOVA COLUNA: Data de Geração
+    // Nome interno fornecido: DatadeGera_x00e7__x00e3_o
+    'DatadeGera_x00e7__x00e3_o': (row) => row['Data de Geração'] || '',
+
+    // ✅ FOTOS (Foto1 até Foto10)
     'Foto1': (row) => row['Foto 1'] || null,
     'Foto2': (row) => row['Foto 2'] || null,
     'Foto3': (row) => row['Foto 3'] || null,
@@ -95,7 +98,6 @@ async function getDriveId(accessToken) {
 
 async function getListId(accessToken) {
     const listName = process.env.LIST_NAME;
-    // Filtra pelo Display Name para encontrar o ID
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
     if (!res.ok) {
@@ -139,7 +141,7 @@ app.post('/upload-pdf', async (req, res) => {
   }
 });
 
-// ROTA 2: Upload dos Dados da Lista (Com tratamento para evitar Erro 500)
+// ROTA 2: Upload dos Dados da Lista
 app.post('/upload-list-data', async (req, res) => {
     const { listData } = req.body;
     if (!listData || listData.length === 0) return res.status(400).json({ success: false, error: 'Sem dados.' });
@@ -156,8 +158,7 @@ app.post('/upload-list-data', async (req, res) => {
             // Mapeia os campos
             for (const key in COLUMN_MAPPING) {
                 const val = COLUMN_MAPPING[key](row);
-                // Só adiciona ao payload se tiver valor real.
-                // SharePoint odeia receber strings vazias ("") para certos tipos de campo.
+                // Filtra campos vazios/null para evitar erros do SharePoint
                 if (val !== null && val !== '' && val !== undefined) {
                      itemFields[key] = val;
                 }
@@ -187,7 +188,7 @@ app.post('/upload-list-data', async (req, res) => {
     }
 });
 
-// ROTA 3: Deletar PDF (Opcional)
+// ROTA 3: Deletar PDF
 app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
     const { ticketNumber } = req.params;
     if (!ticketNumber) return res.status(400).json({ error: 'Ticket obrigatório.' });
