@@ -31,7 +31,7 @@ console.log(`📄 Lista: ${process.env.LIST_NAME}`);
 console.log(`📍 Pasta: ${process.env.FOLDER_PATH}`);
 
 // =================================================================================
-// 📋 MAPEAMENTO DOS NOMES INTERNOS (BASEADO NO QUE VOCÊ ENVIOU)
+// 📋 MAPEAMENTO DOS NOMES INTERNOS (ATUALIZADO COM 10 FOTOS)
 // =================================================================================
 const COLUMN_MAPPING = {
     // Título (Padrão)
@@ -47,6 +47,18 @@ const COLUMN_MAPPING = {
     'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
     'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
 
+    // ✅ NOVOS CAMPOS DE FOTO (ATÉ 10)
+    // Lembre-se de criar estas colunas na Lista do SharePoint como "Hiperlink" ou "Linha de texto"
+    'Foto1': (row) => row['Foto 1'] || '',
+    'Foto2': (row) => row['Foto 2'] || '',
+    'Foto3': (row) => row['Foto 3'] || '',
+    'Foto4': (row) => row['Foto 4'] || '',
+    'Foto5': (row) => row['Foto 5'] || '',
+    'Foto6': (row) => row['Foto 6'] || '',
+    'Foto7': (row) => row['Foto 7'] || '',
+    'Foto8': (row) => row['Foto 8'] || '',
+    'Foto9': (row) => row['Foto 9'] || '',
+    'Foto10': (row) => row['Foto 10'] || '',
 };
 // =================================================================================
 
@@ -95,7 +107,7 @@ async function getListId(accessToken) {
         throw new Error("Variável de ambiente LIST_NAME não está definida.");
     }
     
-    // Busca a lista pelo nome exato ("Laudo")
+    // Busca a lista pelo nome exato
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
     
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
@@ -110,7 +122,7 @@ async function getListId(accessToken) {
         console.log(`✅ ID da Lista "${lists[0].displayName}" encontrado: ${lists[0].id}`);
         return lists[0].id;
     } else {
-        console.error(`❌ A Lista "${listName}" não foi encontrada. Verifique se o nome no Render é exatamente "Laudo".`);
+        console.error(`❌ A Lista "${listName}" não foi encontrada. Verifique se o nome no Render é exatamente o mesmo do SharePoint.`);
         throw new Error(`A Lista "${listName}" não foi encontrada.`);
     }
 }
