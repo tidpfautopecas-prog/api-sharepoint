@@ -46,9 +46,7 @@ const COLUMN_MAPPING = {
     'Origemdodefeito': (row) => row['Origem do defeito'],
     'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
     'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
-    
-    // Assumindo o padrão para Data de Geração (se falhar, verifique o nome interno desta coluna)
-    'DatadeGera_x00e7__x00e3_o': (row) => row['Data de Geração'], 
+
 };
 // =================================================================================
 
