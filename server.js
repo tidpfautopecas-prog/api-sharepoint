@@ -1,3 +1,4 @@
+// server.js
 import express from 'express';
 import bodyParser from 'body-parser';
 import fetch from 'node-fetch';
@@ -18,19 +19,15 @@ app.use(cors({
 
 app.options('*', cors()); 
 
-// Limite aumentado para aceitar PDFs
 app.use(bodyParser.json({ limit: '50mb' }));
 
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
 
 // =================================================================================
-// 📋 MAPEAMENTO ATUALIZADO (Inclui Data de Geração)
+// 📋 MAPEAMENTO DE COLUNAS (Fotos + Data de Geração)
 // =================================================================================
 const COLUMN_MAPPING = {
-    // Título (Padrão)
     'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
-    
-    // Campos existentes
     'N_x00b0_doticket': (row) => row['N° do ticket'],
     'NomedoCliente': (row) => row['Nome do Cliente'],
     'Item': (row) => row.Item,
@@ -39,12 +36,11 @@ const COLUMN_MAPPING = {
     'Origemdodefeito': (row) => row['Origem do defeito'],
     'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
     'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
-
-    // ✅ NOVA COLUNA: Data de Geração
-    // Nome interno fornecido: DatadeGera_x00e7__x00e3_o
+    
+    // Nova Coluna de Data
     'DatadeGera_x00e7__x00e3_o': (row) => row['Data de Geração'] || '',
 
-    // ✅ FOTOS (Foto1 até Foto10)
+    // Fotos 1-10
     'Foto1': (row) => row['Foto 1'] || null,
     'Foto2': (row) => row['Foto 2'] || null,
     'Foto3': (row) => row['Foto 3'] || null,
@@ -154,11 +150,8 @@ app.post('/upload-list-data', async (req, res) => {
 
         const insertionPromises = listData.map(async (row) => {
             const itemFields = {};
-            
-            // Mapeia os campos
             for (const key in COLUMN_MAPPING) {
                 const val = COLUMN_MAPPING[key](row);
-                // Filtra campos vazios/null para evitar erros do SharePoint
                 if (val !== null && val !== '' && val !== undefined) {
                      itemFields[key] = val;
                 }
@@ -219,6 +212,52 @@ app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
         res.status(200).json({ success: true });
     } catch (error) {
         console.error(`❌ Erro delete:`, error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ✅ ROTA 4: Limpar Toda a Lista (NOVO)
+app.delete('/clear-list', async (req, res) => {
+    try {
+        console.log('⚠️ Iniciando limpeza total da lista...');
+        const accessToken = await getAccessToken();
+        const listId = await getListId(accessToken);
+        
+        let itemsToDelete = [];
+        let nextLink = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items?$select=id`;
+        
+        while (nextLink) {
+            const response = await fetch(nextLink, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+            if (!response.ok) throw new Error(`Erro ao buscar itens: ${response.status}`);
+            
+            const data = await response.json();
+            if (data.value) itemsToDelete = itemsToDelete.concat(data.value);
+            nextLink = data['@odata.nextLink'];
+        }
+
+        if (itemsToDelete.length === 0) {
+            return res.status(200).json({ success: true, message: 'A lista já está vazia.' });
+        }
+
+        console.log(`🗑️ Encontrados ${itemsToDelete.length} itens para excluir.`);
+
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < itemsToDelete.length; i += BATCH_SIZE) {
+            const batch = itemsToDelete.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(item => 
+                fetch(`https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items/${item.id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${accessToken}` }
+                })
+            ));
+            console.log(`Progresso: ${Math.min(i + BATCH_SIZE, itemsToDelete.length)}/${itemsToDelete.length} excluídos.`);
+        }
+        
+        console.log('✅ Lista limpa com sucesso.');
+        res.status(200).json({ success: true, message: `${itemsToDelete.length} itens excluídos com sucesso.` });
+
+    } catch (error) {
+        console.error(`❌ Erro ao limpar lista:`, error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
