@@ -2,13 +2,26 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import cors from 'cors';
+import cors from 'cors'; // ✅ IMPORTANTE: O pacote 'cors' é essencial
 
 dotenv.config();
 
 const app = express();
 
-app.use(cors());
+// =================================================================================
+// 🛡️ CORREÇÃO DE CORS (O QUE RESOLVE O SEU ERRO ATUAL)
+// =================================================================================
+app.use(cors({
+    origin: '*', // Permite conexões de qualquer lugar (incluindo seu localhost)
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    credentials: true
+}));
+
+// Garante que as requisições de verificação (preflight) funcionem
+app.options('*', cors()); 
+// =================================================================================
+
 app.use(bodyParser.json({ limit: '50mb' }));
 
 console.log('🚀 API SharePoint Global Plastic a iniciar...');
@@ -18,39 +31,26 @@ console.log(`📄 Lista: ${process.env.LIST_NAME}`);
 console.log(`📍 Pasta: ${process.env.FOLDER_PATH}`);
 
 // =================================================================================
-// ⚡⚡⚡ MAPEAMENTO FINAL CORRIGIDO ⚡⚡⚡
+// 📋 MAPEAMENTO DOS NOMES INTERNOS (BASEADO NO QUE VOCÊ ENVIOU)
 // =================================================================================
-// Baseado nos códigos que você enviou do SharePoint.
 const COLUMN_MAPPING = {
     // Título (Padrão)
     'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
     
-    // "N° do ticket" -> N_x00b0_doticket
+    // Nomes Internos que você encontrou nas configurações:
     'N_x00b0_doticket': (row) => row['N° do ticket'],
-    
-    // "Nome do Cliente" -> NomedoCliente
     'NomedoCliente': (row) => row['Nome do Cliente'],
-    
-    // "Item" -> Item
     'Item': (row) => row.Item,
-    
-    // "Qtde" -> Qtde (Forçamos string pois a coluna é Texto)
-    'Qtde': (row) => String(row.Qtde),
-    
-    // "Motivo" -> Motivo
+    'Qtde': (row) => String(row.Qtde), // Força texto para evitar erro de tipo
     'Motivo': (row) => row.Motivo,
-    
-    // "Origem do defeito" -> Origemdodefeito
     'Origemdodefeito': (row) => row['Origem do defeito'],
-    
-    // "Disposição" -> Disposi_x00e7__x00e3_o
     'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
-    
-    // "Disposição das peças" -> Disposi_x00e7__x00e3_odaspe_x00e
     'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
+    
+    // Assumindo o padrão para Data de Geração (se falhar, verifique o nome interno desta coluna)
+    'DatadeGera_x00e7__x00e3_o': (row) => row['Data de Geração'], 
 };
 // =================================================================================
-
 
 async function getAccessToken(retries = 3) {
   for (let i = 0; i < retries; i++) {
@@ -97,6 +97,7 @@ async function getListId(accessToken) {
         throw new Error("Variável de ambiente LIST_NAME não está definida.");
     }
     
+    // Busca a lista pelo nome exato ("Laudo")
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
     
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
@@ -111,11 +112,10 @@ async function getListId(accessToken) {
         console.log(`✅ ID da Lista "${lists[0].displayName}" encontrado: ${lists[0].id}`);
         return lists[0].id;
     } else {
-        console.error(`❌ A Lista "${listName}" não foi encontrada. Verifique o nome na variável de ambiente LIST_NAME.`);
+        console.error(`❌ A Lista "${listName}" não foi encontrada. Verifique se o nome no Render é exatamente "Laudo".`);
         throw new Error(`A Lista "${listName}" não foi encontrada.`);
     }
 }
-
 
 app.get('/', (req, res) => {
     res.json({
@@ -125,6 +125,7 @@ app.get('/', (req, res) => {
     });
 });
 
+// ROTA 1: Upload do PDF
 app.post('/upload-pdf', async (req, res) => {
   const { fileName, fileBase64 } = req.body;
   if (!fileName || !fileBase64) {
@@ -148,7 +149,7 @@ app.post('/upload-pdf', async (req, res) => {
     });
 
     if (!response.ok) {
-      const errorText = await res.text();
+      const errorText = await response.text();
       throw new Error(`SharePoint Error ${response.status}: ${errorText}`);
     }
 
@@ -162,6 +163,7 @@ app.post('/upload-pdf', async (req, res) => {
   }
 });
 
+// ROTA 2: Upload dos Dados da Lista
 app.post('/upload-list-data', async (req, res) => {
     const { listData } = req.body;
     
@@ -179,7 +181,7 @@ app.post('/upload-list-data', async (req, res) => {
         const insertionPromises = listData.map(async (row) => {
             
             const itemFields = {};
-            // Usa o mapeamento para transformar os dados do frontend nos nomes internos do SharePoint
+            // Mapeia os dados usando os nomes internos corretos
             for (const key in COLUMN_MAPPING) {
                 if (Object.prototype.hasOwnProperty.call(COLUMN_MAPPING, key)) {
                      itemFields[key] = COLUMN_MAPPING[key](row);
@@ -214,7 +216,7 @@ app.post('/upload-list-data', async (req, res) => {
     }
 });
 
-
+// ROTA 3: Exclusão do PDF
 app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
     const { ticketNumber } = req.params;
     if (!ticketNumber) return res.status(400).json({ error: 'Número do ticket é obrigatório.' });
