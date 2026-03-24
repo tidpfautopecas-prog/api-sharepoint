@@ -19,6 +19,9 @@ app.options('*', cors());
 
 app.use(bodyParser.json({ limit: '50mb' }));
 
+console.log('🚀 API SharePoint DPF a iniciar...');
+
+// Mapeamento idêntico ao da Global Plastic, que já possui os Nomes Internos corretos do SharePoint
 const COLUMN_MAPPING = {
     'Title': (row) => row.Title,
     'N_x00b0_doticket': (row) => row.ticketNumber,
@@ -58,7 +61,7 @@ async function getAccessToken(retries = 3) {
       });
       
       const data = await res.json();
-      if (!data.access_token) throw new Error();
+      if (!data.access_token) throw new Error(`Erro na autenticação: ${data.error_description || data.error}`);
       return data.access_token;
     } catch (error) {
       if (i === retries - 1) throw error;
@@ -70,24 +73,24 @@ async function getAccessToken(retries = 3) {
 async function getDriveId(accessToken) {
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/drives`;
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error();
+    if (!res.ok) throw new Error(`Erro ao buscar drives: ${res.status}`);
     const { value: drives } = await res.json();
     const library = drives.find(d => d.name === process.env.LIBRARY_NAME);
-    if (!library) throw new Error();
+    if (!library) throw new Error(`Biblioteca "${process.env.LIBRARY_NAME}" não encontrada.`);
     return library.id;
 }
 
 async function getListId(accessToken) {
-    const listName = process.env.LIST_NAME;
+    const listName = process.env.LIST_NAME || "Laudo";
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error();
+    if (!res.ok) throw new Error(`Erro ao buscar listas: ${res.status}`);
     const { value: lists } = await res.json();
     if (lists.length > 0) return lists[0].id;
-    throw new Error();
+    throw new Error(`Lista "${listName}" não encontrada.`);
 }
 
-app.get('/', (req, res) => res.json({ status: 'online' }));
+app.get('/', (req, res) => res.json({ status: 'online', timestamp: new Date().toISOString() }));
 
 app.get('/status', (req, res) => res.json({ status: 'online' }));
 
@@ -143,7 +146,7 @@ app.post('/upload-pdf', async (req, res) => {
       body: Buffer.from(fileBase64, 'base64')
     });
 
-    if (!response.ok) throw new Error();
+    if (!response.ok) throw new Error(`SharePoint Error ${response.status}`);
     const result = await response.json();
     res.status(200).json({ success: true, sharePointUrl: result.webUrl });
   } catch (error) {
@@ -175,7 +178,7 @@ app.post('/upload-list-data', async (req, res) => {
 
             if (!itemResponse.ok) {
                 const errText = await itemResponse.text();
-                throw new Error(errText);
+                throw new Error(`Erro na Coluna: ${errText}`);
             }
             return itemResponse.json();
         });
@@ -183,6 +186,7 @@ app.post('/upload-list-data', async (req, res) => {
         await Promise.all(insertionPromises);
         res.status(200).json({ success: true });
     } catch (error) {
+        console.error(`❌ Erro upload lista:`, error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -214,4 +218,6 @@ app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {});
+app.listen(PORT, () => {
+    console.log(`🌐 Servidor rodando na porta ${PORT}`);
+});
