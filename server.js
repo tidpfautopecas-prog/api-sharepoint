@@ -19,29 +19,27 @@ app.options('*', cors());
 
 app.use(bodyParser.json({ limit: '50mb' }));
 
-console.log('🚀 API SharePoint Global Plastic a iniciar...');
-
 const COLUMN_MAPPING = {
-    'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
-    'N_x00b0_doticket': (row) => row['N° do ticket'],
-    'NomedoCliente': (row) => row['Nome do Cliente'],
-    'Item': (row) => row.Item,
-    'Qtde': (row) => String(row.Qtde),
-    'Motivo': (row) => row.Motivo,
-    'Origemdodefeito': (row) => row['Origem do defeito'],
-    'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
-    'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
-    'DatadeGera_x00e7__x00e3_o': (row) => row['Data de Geração'] || '',
-    'Foto1': (row) => row['Foto 1'] || null,
-    'Foto2': (row) => row['Foto 2'] || null,
-    'Foto3': (row) => row['Foto 3'] || null,
-    'Foto4': (row) => row['Foto 4'] || null,
-    'Foto5': (row) => row['Foto 5'] || null,
-    'Foto6': (row) => row['Foto 6'] || null,
-    'Foto7': (row) => row['Foto 7'] || null,
-    'Foto8': (row) => row['Foto 8'] || null,
-    'Foto9': (row) => row['Foto 9'] || null,
-    'Foto10': (row) => row['Foto 10'] || null,
+    'Title': (row) => row.Title,
+    'N_x00b0_doticket': (row) => row.ticketNumber,
+    'NomedoCliente': (row) => row.nomeCliente,
+    'Item': (row) => row.item,
+    'Qtde': (row) => String(row.qtde),
+    'Motivo': (row) => row.motivo,
+    'Origemdodefeito': (row) => row.origemDefeito,
+    'Disposi_x00e7__x00e3_o': (row) => row.disposicao,
+    'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row.disposicaoPecas,
+    'DatadeGera_x00e7__x00e3_o': (row) => row.dataGeracao || '',
+    'Foto1': (row) => row.foto1 || null,
+    'Foto2': (row) => row.foto2 || null,
+    'Foto3': (row) => row.foto3 || null,
+    'Foto4': (row) => row.foto4 || null,
+    'Foto5': (row) => row.foto5 || null,
+    'Foto6': (row) => row.foto6 || null,
+    'Foto7': (row) => row.foto7 || null,
+    'Foto8': (row) => row.foto8 || null,
+    'Foto9': (row) => row.foto9 || null,
+    'Foto10': (row) => row.foto10 || null,
 };
 
 async function getAccessToken(retries = 3) {
@@ -60,7 +58,7 @@ async function getAccessToken(retries = 3) {
       });
       
       const data = await res.json();
-      if (!data.access_token) throw new Error(`Erro na autenticação: ${data.error_description || data.error}`);
+      if (!data.access_token) throw new Error();
       return data.access_token;
     } catch (error) {
       if (i === retries - 1) throw error;
@@ -72,10 +70,10 @@ async function getAccessToken(retries = 3) {
 async function getDriveId(accessToken) {
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/drives`;
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Erro ao buscar drives: ${res.status}`);
+    if (!res.ok) throw new Error();
     const { value: drives } = await res.json();
     const library = drives.find(d => d.name === process.env.LIBRARY_NAME);
-    if (!library) throw new Error(`Biblioteca "${process.env.LIBRARY_NAME}" não encontrada.`);
+    if (!library) throw new Error();
     return library.id;
 }
 
@@ -83,13 +81,15 @@ async function getListId(accessToken) {
     const listName = process.env.LIST_NAME;
     const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Erro ao buscar listas: ${res.status}`);
+    if (!res.ok) throw new Error();
     const { value: lists } = await res.json();
     if (lists.length > 0) return lists[0].id;
-    throw new Error(`Lista "${listName}" não encontrada.`);
+    throw new Error();
 }
 
-app.get('/', (req, res) => res.json({ status: 'online', timestamp: new Date().toISOString() }));
+app.get('/', (req, res) => res.json({ status: 'online' }));
+
+app.get('/status', (req, res) => res.json({ status: 'online' }));
 
 app.get('/check-status/:ticketNumber', async (req, res) => {
     const { ticketNumber } = req.params;
@@ -99,8 +99,8 @@ app.get('/check-status/:ticketNumber', async (req, res) => {
         const driveId = await getDriveId(accessToken);
         const listId = await getListId(accessToken);
 
-        const listUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields($select=N_x00b0_doticket)&$filter=fields/N_x00b0_doticket eq '${ticketNumber}'`;
-        const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+        const listUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?$filter=fields/N_x00b0_doticket eq '${ticketNumber}'`;
+        const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${accessToken}`, 'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly' } });
         
         let existsInList = false;
         if (listRes.ok) {
@@ -122,7 +122,6 @@ app.get('/check-status/:ticketNumber', async (req, res) => {
         res.json({ existsInList, existsInPdf });
 
     } catch (error) {
-        console.error(`Erro check-status:`, error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -144,11 +143,10 @@ app.post('/upload-pdf', async (req, res) => {
       body: Buffer.from(fileBase64, 'base64')
     });
 
-    if (!response.ok) throw new Error(`SharePoint Error ${response.status}`);
+    if (!response.ok) throw new Error();
     const result = await response.json();
     res.status(200).json({ success: true, sharePointUrl: result.webUrl });
   } catch (error) {
-    console.error(`❌ Erro PDF:`, error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -175,14 +173,16 @@ app.post('/upload-list-data', async (req, res) => {
                 body: JSON.stringify({ fields: itemFields })
             });
 
-            if (!itemResponse.ok) throw new Error(`Status: ${itemResponse.status}`);
+            if (!itemResponse.ok) {
+                const errText = await itemResponse.text();
+                throw new Error(errText);
+            }
             return itemResponse.json();
         });
 
         await Promise.all(insertionPromises);
         res.status(200).json({ success: true });
     } catch (error) {
-        console.error(`❌ Erro lista:`, error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -198,7 +198,7 @@ app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
         const listUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}:/children`;
         
         const listResponse = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-        if (!listResponse.ok) throw new Error(`Erro listagem`);
+        if (!listResponse.ok) throw new Error();
         const { value: allFiles } = await listResponse.json();
         
         const filesToDelete = allFiles.filter(file => file.name.startsWith(`Laudo - ${ticketNumber}-`));
@@ -213,35 +213,5 @@ app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
     }
 });
 
-app.delete('/clear-list', async (req, res) => {
-    try {
-        const accessToken = await getAccessToken();
-        const listId = await getListId(accessToken);
-        let itemsToDelete = [];
-        let nextLink = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items?$select=id`;
-        
-        while (nextLink) {
-            const response = await fetch(nextLink, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-            if (!response.ok) throw new Error(`Erro busca`);
-            const data = await response.json();
-            if (data.value) itemsToDelete = itemsToDelete.concat(data.value);
-            nextLink = data['@odata.nextLink'];
-        }
-
-        if (itemsToDelete.length === 0) return res.status(200).json({ success: true, message: 'Lista vazia.' });
-
-        const BATCH_SIZE = 10;
-        for (let i = 0; i < itemsToDelete.length; i += BATCH_SIZE) {
-            const batch = itemsToDelete.slice(i, i + BATCH_SIZE);
-            await Promise.all(batch.map(item => 
-                fetch(`https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items/${item.id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${accessToken}` } })
-            ));
-        }
-        res.status(200).json({ success: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 API online na porta ${PORT}`));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {});
