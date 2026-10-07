@@ -33,20 +33,14 @@ const TENANT_ID = process.env.TENANT_ID;
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 
-const SHAREPOINT_HOSTNAME =
-    process.env.SHAREPOINT_HOSTNAME;
+const SITE_ID = process.env.SITE_ID;
+const LIST_ID = process.env.LIST_ID;
+const DRIVE_ID = process.env.DRIVE_ID;
 
-const SHAREPOINT_SITE_PATH =
-    process.env.SHAREPOINT_SITE_PATH;
-
-const LIBRARY_NAME =
-    process.env.LIBRARY_NAME;
+const LIBRARY_NAME = process.env.LIBRARY_NAME;
 
 const FOLDER_PATH =
     process.env.FOLDER_PATH || 'Laudos';
-
-const LIST_NAME =
-    process.env.LIST_NAME;
 
 // ============================================================
 // INICIALIZAÇÃO
@@ -66,15 +60,14 @@ function validateEnvironment() {
         'TENANT_ID',
         'CLIENT_ID',
         'CLIENT_SECRET',
-        'SHAREPOINT_HOSTNAME',
-        'SHAREPOINT_SITE_PATH',
-        'LIBRARY_NAME',
-        'LIST_NAME'
+        'SITE_ID',
+        'LIST_ID'
     ];
 
-    const missing = requiredVariables.filter(
-        variable => !process.env[variable]
-    );
+    const missing =
+        requiredVariables.filter(
+            variable => !process.env[variable]
+        );
 
     if (missing.length > 0) {
 
@@ -83,9 +76,31 @@ function validateEnvironment() {
             missing.join(', ')
         );
     }
+
+    if (!DRIVE_ID && !LIBRARY_NAME) {
+
+        console.warn(
+            '⚠️ Configure DRIVE_ID ou LIBRARY_NAME no Render.'
+        );
+    }
 }
 
 validateEnvironment();
+
+// ============================================================
+// TRATAMENTO DE ERRO
+// ============================================================
+
+function getErrorMessage(error) {
+
+    return (
+        error?.response?.data?.error_description ||
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Erro desconhecido.'
+    );
+}
 
 // ============================================================
 // AUTENTICAÇÃO MICROSOFT
@@ -94,6 +109,27 @@ validateEnvironment();
 async function getAccessToken() {
 
     try {
+
+        if (!TENANT_ID) {
+
+            throw new Error(
+                'TENANT_ID não configurado no Render.'
+            );
+        }
+
+        if (!CLIENT_ID) {
+
+            throw new Error(
+                'CLIENT_ID não configurado no Render.'
+            );
+        }
+
+        if (!CLIENT_SECRET) {
+
+            throw new Error(
+                'CLIENT_SECRET não configurado no Render.'
+            );
+        }
 
         const tokenUrl =
             `https://login.microsoftonline.com/` +
@@ -134,14 +170,19 @@ async function getAccessToken() {
                 }
             );
 
+        if (!response.data.access_token) {
+
+            throw new Error(
+                'Microsoft não retornou access_token.'
+            );
+        }
+
         return response.data.access_token;
 
     } catch (error) {
 
         const message =
-            error.response?.data?.error_description ||
-            error.response?.data?.error?.message ||
-            error.message;
+            getErrorMessage(error);
 
         console.error(
             '❌ Erro autenticação:',
@@ -158,47 +199,32 @@ async function getAccessToken() {
 // SITE ID
 // ============================================================
 
-async function getSiteId(accessToken) {
+async function getSiteId() {
 
-    try {
-
-        const sitePath =
-            SHAREPOINT_SITE_PATH.startsWith('/')
-                ? SHAREPOINT_SITE_PATH
-                : `/${SHAREPOINT_SITE_PATH}`;
-
-        const url =
-            `https://graph.microsoft.com/v1.0/sites/` +
-            `${SHAREPOINT_HOSTNAME}:${sitePath}`;
-
-        const response =
-            await axios.get(
-                url,
-                {
-                    headers: {
-                        Authorization:
-                            `Bearer ${accessToken}`
-                    }
-                }
-            );
-
-        return response.data.id;
-
-    } catch (error) {
-
-        const message =
-            error.response?.data?.error?.message ||
-            error.message;
-
-        console.error(
-            '❌ Erro ao localizar site:',
-            message
-        );
+    if (!SITE_ID) {
 
         throw new Error(
-            `Erro ao localizar site: ${message}`
+            'Variável SITE_ID não configurada no Render.'
         );
     }
+
+    return SITE_ID;
+}
+
+// ============================================================
+// LIST ID
+// ============================================================
+
+async function getListId() {
+
+    if (!LIST_ID) {
+
+        throw new Error(
+            'Variável LIST_ID não configurada no Render.'
+        );
+    }
+
+    return LIST_ID;
 }
 
 // ============================================================
@@ -212,12 +238,25 @@ async function getDriveId(
 
     try {
 
+        // Se já temos DRIVE_ID configurado,
+        // não precisamos procurar a biblioteca.
+
+        if (DRIVE_ID) {
+
+            return DRIVE_ID;
+        }
+
         if (!siteId) {
 
             siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
+        }
+
+        if (!LIBRARY_NAME) {
+
+            throw new Error(
+                'DRIVE_ID não configurado e LIBRARY_NAME não informado.'
+            );
         }
 
         const url =
@@ -253,12 +292,13 @@ async function getDriveId(
 
             const available =
                 drives
-                    .map(item => item.name)
+                    .map(
+                        item => item.name
+                    )
                     .join(', ');
 
             throw new Error(
-                `Biblioteca "${LIBRARY_NAME}" ` +
-                `não encontrada. ` +
+                `Biblioteca "${LIBRARY_NAME}" não encontrada. ` +
                 `Bibliotecas disponíveis: ${available}`
             );
         }
@@ -268,8 +308,7 @@ async function getDriveId(
     } catch (error) {
 
         const message =
-            error.response?.data?.error?.message ||
-            error.message;
+            getErrorMessage(error);
 
         throw new Error(
             `Erro ao localizar biblioteca: ${message}`
@@ -278,80 +317,13 @@ async function getDriveId(
 }
 
 // ============================================================
-// LISTA SHAREPOINT
-// ============================================================
-
-async function getListId(
-    accessToken,
-    siteId
-) {
-
-    try {
-
-        const url =
-            `https://graph.microsoft.com/v1.0/` +
-            `sites/${siteId}/lists`;
-
-        const response =
-            await axios.get(
-                url,
-                {
-                    headers: {
-                        Authorization:
-                            `Bearer ${accessToken}`
-                    }
-                }
-            );
-
-        const lists =
-            response.data.value || [];
-
-        const list =
-            lists.find(
-                item =>
-                    item.displayName
-                        ?.trim()
-                        .toLowerCase() ===
-                    LIST_NAME
-                        ?.trim()
-                        .toLowerCase()
-            );
-
-        if (!list) {
-
-            const available =
-                lists
-                    .map(item => item.displayName)
-                    .join(', ');
-
-            throw new Error(
-                `Lista "${LIST_NAME}" ` +
-                `não encontrada. ` +
-                `Listas disponíveis: ${available}`
-            );
-        }
-
-        return list.id;
-
-    } catch (error) {
-
-        const message =
-            error.response?.data?.error?.message ||
-            error.message;
-
-        throw new Error(
-            `Erro ao localizar lista: ${message}`
-        );
-    }
-}
-
-// ============================================================
-// NORMALIZA TICKET
+// NORMALIZAÇÃO DO TICKET
 // ============================================================
 
 function normalizeTicket(ticket) {
 
     if (!ticket) {
+
         return '';
     }
 
@@ -368,14 +340,14 @@ function normalizeTicket(ticket) {
 // IDENTIFICA O TICKET PELO NOME DO PDF
 // ============================================================
 //
-// Reconhece:
+// Exemplos:
 //
 // Laudo - SR-7382-17913948365.pdf
 // Laudo - SR-7382-179134602920.pdf
 // Laudo - SR-7382-20261007 1426.pdf
 // Laudo - 12345-20261007 1426.pdf
 //
-// Retorna:
+// Resultado:
 //
 // SR-7382
 // 12345
@@ -385,6 +357,7 @@ function normalizeTicket(ticket) {
 function extractTicketNumber(fileName) {
 
     if (!fileName) {
+
         return null;
     }
 
@@ -396,12 +369,13 @@ function extractTicketNumber(fileName) {
             .toLowerCase()
             .endsWith('.pdf')
     ) {
+
         return null;
     }
 
-    // --------------------------------------------
+    // --------------------------------------------------------
     // SR-7382
-    // --------------------------------------------
+    // --------------------------------------------------------
 
     let match =
         name.match(
@@ -415,12 +389,13 @@ function extractTicketNumber(fileName) {
         );
     }
 
-    // --------------------------------------------
+    // --------------------------------------------------------
     // Outros prefixos:
+    //
     // OS-123
     // TK-123
     // ABC-123
-    // --------------------------------------------
+    // --------------------------------------------------------
 
     match =
         name.match(
@@ -434,9 +409,9 @@ function extractTicketNumber(fileName) {
         );
     }
 
-    // --------------------------------------------
+    // --------------------------------------------------------
     // Ticket somente numérico
-    // --------------------------------------------
+    // --------------------------------------------------------
 
     match =
         name.match(
@@ -454,6 +429,27 @@ function extractTicketNumber(fileName) {
 }
 
 // ============================================================
+// CAMINHO DA PASTA
+// ============================================================
+
+function getEncodedFolderPath() {
+
+    const cleanFolderPath =
+        String(FOLDER_PATH)
+            .replace(/^\/+/, '')
+            .replace(/\/+$/, '');
+
+    return cleanFolderPath
+        .split('/')
+        .filter(Boolean)
+        .map(
+            part =>
+                encodeURIComponent(part)
+        )
+        .join('/');
+}
+
+// ============================================================
 // LISTA TODOS OS ARQUIVOS DA PASTA
 // ============================================================
 
@@ -464,19 +460,8 @@ async function getAllFilesFromFolder(
 
     const files = [];
 
-    const cleanFolderPath =
-        FOLDER_PATH
-            .replace(/^\/+/, '')
-            .replace(/\/+$/, '');
-
     const encodedPath =
-        cleanFolderPath
-            .split('/')
-            .map(
-                part =>
-                    encodeURIComponent(part)
-            )
-            .join('/');
+        getEncodedFolderPath();
 
     let url =
         `https://graph.microsoft.com/v1.0/` +
@@ -484,7 +469,7 @@ async function getAllFilesFromFolder(
         `${encodedPath}:/children` +
         `?$top=200&` +
         `$select=id,name,file,folder,` +
-        `createdDateTime,lastModifiedDateTime,size`;
+        `createdDateTime,lastModifiedDateTime,size,webUrl`;
 
     while (url) {
 
@@ -499,17 +484,12 @@ async function getAllFilesFromFolder(
                 }
             );
 
-        if (
-            response.data &&
-            Array.isArray(
-                response.data.value
-            )
-        ) {
+        const currentFiles =
+            response.data.value || [];
 
-            files.push(
-                ...response.data.value
-            );
-        }
+        files.push(
+            ...currentFiles
+        );
 
         url =
             response.data[
@@ -521,7 +501,7 @@ async function getAllFilesFromFolder(
 }
 
 // ============================================================
-// VERIFICA SE O PDF DO TICKET EXISTE
+// VERIFICA SE PDF DO TICKET EXISTE
 // ============================================================
 
 async function ticketPdfExists(
@@ -545,6 +525,7 @@ async function ticketPdfExists(
         file => {
 
             if (!file.file) {
+
                 return false;
             }
 
@@ -561,25 +542,31 @@ async function ticketPdfExists(
 }
 
 // ============================================================
-// OBTÉM VALOR DO TICKET DE UM ITEM DA LISTA
+// LOCALIZA TICKET NOS CAMPOS DA LISTA
 // ============================================================
 
-function getTicketFromListFields(fields) {
+function getTicketFromListFields(
+    fields
+) {
 
     if (!fields) {
+
         return '';
     }
 
-    const possibleFields = [
+    const possibleValues = [
+        fields['N_x00b0_doticket'],
         fields['N_x00b0__x0020_do_x0020_ticket'],
         fields['N_x00b0_do_x0020_ticket'],
-        fields['N_x00b0__x0020_do_x0020_Ticket'],
         fields['NumeroTicket'],
         fields['Ticket'],
         fields['Title']
     ];
 
-    for (const value of possibleFields) {
+    for (
+        const value
+        of possibleValues
+    ) {
 
         if (
             value !== undefined &&
@@ -643,6 +630,7 @@ async function ticketExistsInList(
             );
 
         if (found) {
+
             return true;
         }
 
@@ -665,9 +653,27 @@ app.get(
 
         res.json({
             status: 'online',
+
             timestamp:
                 new Date()
-                    .toISOString()
+                    .toISOString(),
+
+            configuration: {
+                siteId:
+                    Boolean(SITE_ID),
+
+                listId:
+                    Boolean(LIST_ID),
+
+                driveId:
+                    Boolean(DRIVE_ID),
+
+                libraryName:
+                    Boolean(LIBRARY_NAME),
+
+                folderPath:
+                    FOLDER_PATH
+            }
         });
     }
 );
@@ -693,6 +699,7 @@ app.get(
                     .status(400)
                     .json({
                         success: false,
+
                         error:
                             'Número do ticket não informado.'
                     });
@@ -706,18 +713,13 @@ app.get(
                 await getAccessToken();
 
             const siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
+
+            const listId =
+                await getListId();
 
             const driveId =
                 await getDriveId(
-                    accessToken,
-                    siteId
-                );
-
-            const listId =
-                await getListId(
                     accessToken,
                     siteId
                 );
@@ -749,24 +751,31 @@ app.get(
 
             return res.json({
                 success: true,
+
                 ticketNumber,
+
                 existsInPdf,
+
                 existsInList
             });
 
         } catch (error) {
 
+            const message =
+                getErrorMessage(error);
+
             console.error(
                 '❌ Erro check-status:',
-                error.message
+                message
             );
 
             return res
                 .status(500)
                 .json({
                     success: false,
+
                     error:
-                        error.message
+                        message
                 });
         }
     }
@@ -799,6 +808,7 @@ app.post(
                     .status(400)
                     .json({
                         success: false,
+
                         error:
                             'fileName e fileBase64 são obrigatórios.'
                     });
@@ -815,27 +825,11 @@ app.post(
                 );
             }
 
-            if (ticketTitle) {
-
-                console.log(
-                    `📝 Título: ${ticketTitle}`
-                );
-            }
-
-            if (isReport) {
-
-                console.log(
-                    '📊 Arquivo identificado como relatório.'
-                );
-            }
-
             const accessToken =
                 await getAccessToken();
 
             const siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
 
             const driveId =
                 await getDriveId(
@@ -843,19 +837,8 @@ app.post(
                     siteId
                 );
 
-            const cleanFolderPath =
-                FOLDER_PATH
-                    .replace(/^\/+/, '')
-                    .replace(/\/+$/, '');
-
             const encodedPath =
-                cleanFolderPath
-                    .split('/')
-                    .map(
-                        part =>
-                            encodeURIComponent(part)
-                    )
-                    .join('/');
+                getEncodedFolderPath();
 
             const encodedFileName =
                 encodeURIComponent(
@@ -882,6 +865,7 @@ app.post(
                         headers: {
                             Authorization:
                                 `Bearer ${accessToken}`,
+
                             'Content-Type':
                                 'application/pdf'
                         },
@@ -919,8 +903,7 @@ app.post(
         } catch (error) {
 
             const message =
-                error.response?.data?.error?.message ||
-                error.message;
+                getErrorMessage(error);
 
             console.error(
                 '❌ Erro PDF:',
@@ -931,24 +914,143 @@ app.post(
                 .status(500)
                 .json({
                     success: false,
-                    error: message
+
+                    error:
+                        message
                 });
         }
     }
 );
 
 // ============================================================
-// UPLOAD DOS DADOS PARA A LISTA
+// MAPEAMENTO DAS COLUNAS DA LISTA
 // ============================================================
 //
-// OBSERVAÇÃO:
+// Estes são os nomes internos utilizados no projeto.
 //
-// Os nomes internos das colunas de uma lista SharePoint podem
-// ser diferentes dos nomes exibidos na tela.
-//
-// Se sua API anterior já possuía o mapeamento correto das
-// colunas, preserve os nomes internos que já funcionavam.
-//
+// ============================================================
+
+function buildSharePointFields(
+    row,
+    ticketNumber
+) {
+
+    const fields = {};
+
+    const ticket =
+        String(
+            row['N° do ticket'] ||
+            ticketNumber ||
+            ''
+        );
+
+    // --------------------------------------------------------
+    // Ticket
+    // --------------------------------------------------------
+
+    fields.Title =
+        ticket;
+
+    fields.N_x00b0_doticket =
+        ticket;
+
+    // --------------------------------------------------------
+    // Cliente
+    // --------------------------------------------------------
+
+    fields.NomedoCliente =
+        row['Nome do Cliente'] || '';
+
+    // --------------------------------------------------------
+    // Item
+    // --------------------------------------------------------
+
+    fields.Item =
+        String(
+            row.Item || ''
+        );
+
+    // --------------------------------------------------------
+    // Quantidade
+    // --------------------------------------------------------
+
+    fields.Qtde =
+        Number(
+            row.Qtde || 0
+        );
+
+    // --------------------------------------------------------
+    // Motivo
+    // --------------------------------------------------------
+
+    fields.Motivo =
+        Array.isArray(
+            row.Motivo
+        )
+            ? row.Motivo.join(', ')
+            : (
+                row.Motivo || ''
+            );
+
+    // --------------------------------------------------------
+    // Origem do defeito
+    // --------------------------------------------------------
+
+    fields.Origemdodefeito =
+        row['Origem do defeito'] || '';
+
+    // --------------------------------------------------------
+    // Disposição
+    // --------------------------------------------------------
+
+    fields[
+        'Disposi_x00e7__x00e3_o'
+    ] =
+        row['Disposição'] || '';
+
+    // --------------------------------------------------------
+    // Disposição das peças
+    // --------------------------------------------------------
+
+    fields[
+        'Disposi_x00e7__x00e3_odaspe_x00e'
+    ] =
+        row['Disposição das peças'] || '';
+
+    // --------------------------------------------------------
+    // Data
+    // --------------------------------------------------------
+
+    fields[
+        'DatadeGera_x00e7__x00e3_o'
+    ] =
+        row['Data de Geração'] || '';
+
+    // --------------------------------------------------------
+    // Fotos
+    // --------------------------------------------------------
+
+    for (
+        let i = 1;
+        i <= 10;
+        i++
+    ) {
+
+        const photo =
+            row[`Foto ${i}`];
+
+        if (photo) {
+
+            fields[`Foto${i}`] =
+                photo;
+        }
+    }
+
+    return fields;
+}
+
+// ============================================================
+// UPLOAD LIST DATA
 // ============================================================
 
 app.post(
@@ -973,24 +1075,24 @@ app.post(
                     .status(400)
                     .json({
                         success: false,
+
                         error:
                             'listData não informado.'
                     });
             }
 
+            console.log(
+                `📋 Enviando ticket ${ticketNumber} para lista...`
+            );
+
             const accessToken =
                 await getAccessToken();
 
             const siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
 
             const listId =
-                await getListId(
-                    accessToken,
-                    siteId
-                );
+                await getListId();
 
             let inserted = 0;
 
@@ -999,97 +1101,11 @@ app.post(
                 of listData
             ) {
 
-                /*
-                 * ATENÇÃO:
-                 *
-                 * Se esses nomes internos forem diferentes
-                 * na sua lista atual, mantenha os nomes que
-                 * seu server.js antigo já utilizava.
-                 */
-
-                const fields = {
-                    Title:
-                        String(
-                            row[
-                                'N° do ticket'
-                            ] ||
-                            ticketNumber ||
-                            ''
-                        ),
-
-                    NumeroTicket:
-                        String(
-                            row[
-                                'N° do ticket'
-                            ] ||
-                            ticketNumber ||
-                            ''
-                        ),
-
-                    NomeCliente:
-                        row[
-                            'Nome do Cliente'
-                        ] || '',
-
-                    Item:
-                        String(
-                            row.Item || ''
-                        ),
-
-                    Qtde:
-                        row.Qtde || 0,
-
-                    Motivo:
-                        Array.isArray(
-                            row.Motivo
-                        )
-                            ? row.Motivo.join(
-                                ', '
-                            )
-                            : (
-                                row.Motivo ||
-                                ''
-                            ),
-
-                    OrigemDefeito:
-                        row[
-                            'Origem do defeito'
-                        ] || '',
-
-                    Disposicao:
-                        row[
-                            'Disposição'
-                        ] || '',
-
-                    DisposicaoPecas:
-                        row[
-                            'Disposição das peças'
-                        ] || '',
-
-                    DataGeracao:
-                        row[
-                            'Data de Geração'
-                        ] || ''
-                };
-
-                for (
-                    let i = 1;
-                    i <= 10;
-                    i++
-                ) {
-
-                    const value =
-                        row[
-                            `Foto ${i}`
-                        ];
-
-                    if (value) {
-
-                        fields[
-                            `Foto${i}`
-                        ] = value;
-                    }
-                }
+                const fields =
+                    buildSharePointFields(
+                        row,
+                        ticketNumber
+                    );
 
                 const url =
                     `https://graph.microsoft.com/v1.0/` +
@@ -1122,14 +1138,16 @@ app.post(
 
             return res.json({
                 success: true,
+
+                ticketNumber,
+
                 inserted
             });
 
         } catch (error) {
 
             const message =
-                error.response?.data?.error?.message ||
-                error.message;
+                getErrorMessage(error);
 
             console.error(
                 '❌ Erro lista:',
@@ -1140,14 +1158,16 @@ app.post(
                 .status(500)
                 .json({
                     success: false,
-                    error: message
+
+                    error:
+                        message
                 });
         }
     }
 );
 
 // ============================================================
-// EXCLUI TODOS OS PDFs DE UM TICKET
+// EXCLUI PDFs DE UM TICKET
 // ============================================================
 
 app.delete(
@@ -1167,6 +1187,7 @@ app.delete(
                     .status(400)
                     .json({
                         success: false,
+
                         error:
                             'Número do ticket não informado.'
                     });
@@ -1176,9 +1197,7 @@ app.delete(
                 await getAccessToken();
 
             const siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
 
             const driveId =
                 await getDriveId(
@@ -1198,8 +1217,7 @@ app.delete(
                         file.file &&
                         extractTicketNumber(
                             file.name
-                        ) ===
-                        ticketNumber
+                        ) === ticketNumber
                 );
 
             let deleted = 0;
@@ -1233,15 +1251,16 @@ app.delete(
 
             return res.json({
                 success: true,
+
                 ticketNumber,
+
                 deleted
             });
 
         } catch (error) {
 
             const message =
-                error.response?.data?.error?.message ||
-                error.message;
+                getErrorMessage(error);
 
             console.error(
                 '❌ Erro ao excluir PDF:',
@@ -1252,7 +1271,9 @@ app.delete(
                 .status(500)
                 .json({
                     success: false,
-                    error: message
+
+                    error:
+                        message
                 });
         }
     }
@@ -1262,22 +1283,23 @@ app.delete(
 // LIMPEZA DE PDFs DUPLICADOS
 // ============================================================
 //
-// EXEMPLO:
+// IMPORTANTE:
+//
+// Esta rotina mexe SOMENTE nos PDFs.
+//
+// Ela NÃO exclui registros da Lista SharePoint.
+//
+// Para cada ticket:
+//
+// SR-7382
+//
+// se houver:
 //
 // Laudo - SR-7382-17913948365.pdf
 // Laudo - SR-7382-179134602920.pdf
 //
-// Os dois são:
-// SR-7382
-//
-// A rotina:
-//
-// 1. Agrupa por ticket.
-// 2. Ordena por lastModifiedDateTime.
-// 3. Mantém o mais recente.
-// 4. Exclui os PDFs mais antigos.
-//
-// NÃO APAGA ITENS DA LISTA SHAREPOINT.
+// mantém o arquivo mais recentemente modificado
+// e exclui os demais.
 //
 // ============================================================
 
@@ -1295,9 +1317,7 @@ app.post(
                 await getAccessToken();
 
             const siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
 
             const driveId =
                 await getDriveId(
@@ -1330,6 +1350,7 @@ app.post(
                 // Ignora pastas.
 
                 if (!file.file) {
+
                     continue;
                 }
 
@@ -1350,10 +1371,8 @@ app.post(
                         file.name
                     );
 
-                /*
-                 * Se não reconheceu o padrão do laudo,
-                 * não mexe no arquivo.
-                 */
+                // Não reconheceu como laudo.
+                // Não toca no arquivo.
 
                 if (!ticketNumber) {
 
@@ -1386,7 +1405,7 @@ app.post(
             const keptFiles = [];
 
             // ------------------------------------------------
-            // PROCESSAMENTO POR TICKET
+            // PROCESSAMENTO
             // ------------------------------------------------
 
             for (
@@ -1396,8 +1415,6 @@ app.post(
                 ]
                 of ticketGroups.entries()
             ) {
-
-                // Um único PDF: não há duplicidade.
 
                 if (
                     ticketFiles.length <= 1
@@ -1411,9 +1428,9 @@ app.post(
                     `${ticketFiles.length} PDFs encontrados.`
                 );
 
-                /*
-                 * Mais recentemente modificado primeiro.
-                 */
+                // --------------------------------------------
+                // Ordena pelo mais recente
+                // --------------------------------------------
 
                 ticketFiles.sort(
                     (a, b) => {
@@ -1438,6 +1455,10 @@ app.post(
                         );
                     }
                 );
+
+                // --------------------------------------------
+                // Mantém o primeiro
+                // --------------------------------------------
 
                 const keepFile =
                     ticketFiles[0];
@@ -1477,7 +1498,7 @@ app.post(
                 });
 
                 // --------------------------------------------
-                // EXCLUSÃO DOS ANTIGOS
+                // Exclui os antigos
                 // --------------------------------------------
 
                 for (
@@ -1523,7 +1544,6 @@ app.post(
             );
 
             return res.json({
-
                 success: true,
 
                 message:
@@ -1552,8 +1572,7 @@ app.post(
         } catch (error) {
 
             const message =
-                error.response?.data?.error?.message ||
-                error.message;
+                getErrorMessage(error);
 
             console.error(
                 '❌ Erro ao limpar PDFs duplicados:',
@@ -1564,24 +1583,25 @@ app.post(
                 .status(500)
                 .json({
                     success: false,
-                    error: message
+
+                    error:
+                        message
                 });
         }
     }
 );
 
 // ============================================================
-// LIMPAR TODA A LISTA SHAREPOINT
+// LIMPAR TODA A LISTA
 // ============================================================
 //
 // ATENÇÃO:
 //
-// Esta rota é separada.
+// Essa rota apaga TODOS os itens da lista.
+//
+// Ela NÃO é executada pela rota:
 //
 // /cleanup-duplicate-pdfs
-// NÃO chama esta rota.
-//
-// Portanto, limpar PDFs duplicados NÃO limpa a lista.
 //
 // ============================================================
 
@@ -1592,30 +1612,19 @@ app.delete(
         try {
 
             console.log(
-                '⚠️ Iniciando limpeza total da lista...'
+                '⚠️ Iniciando limpeza TOTAL da lista...'
             );
 
             const accessToken =
                 await getAccessToken();
 
             const siteId =
-                await getSiteId(
-                    accessToken
-                );
+                await getSiteId();
 
             const listId =
-                await getListId(
-                    accessToken,
-                    siteId
-                );
+                await getListId();
 
             let deleted = 0;
-
-            /*
-             * É melhor buscar novamente a primeira página
-             * depois das exclusões, pois os itens da coleção
-             * estão sendo modificados durante o processo.
-             */
 
             while (true) {
 
@@ -1691,8 +1700,7 @@ app.delete(
         } catch (error) {
 
             const message =
-                error.response?.data?.error?.message ||
-                error.message;
+                getErrorMessage(error);
 
             console.error(
                 '❌ Erro ao limpar lista:',
@@ -1703,7 +1711,9 @@ app.delete(
                 .status(500)
                 .json({
                     success: false,
-                    error: message
+
+                    error:
+                        message
                 });
         }
     }
@@ -1744,11 +1754,19 @@ app.listen(
         );
 
         console.log(
-            `📚 Biblioteca: ${LIBRARY_NAME}`
+            `🔗 SITE_ID configurado: ${Boolean(SITE_ID)}`
         );
 
         console.log(
-            `📋 Lista: ${LIST_NAME}`
+            `📋 LIST_ID configurado: ${Boolean(LIST_ID)}`
+        );
+
+        console.log(
+            `📚 DRIVE_ID configurado: ${Boolean(DRIVE_ID)}`
+        );
+
+        console.log(
+            `📚 LIBRARY_NAME configurado: ${Boolean(LIBRARY_NAME)}`
         );
     }
 );
