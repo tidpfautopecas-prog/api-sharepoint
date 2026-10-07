@@ -1,247 +1,1653 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import fetch from 'node-fetch';
-import dotenv from 'dotenv';
-import cors from 'cors';
+require('dotenv').config();
 
-dotenv.config();
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
 
 const app = express();
 
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-    credentials: true
+const PORT = process.env.PORT || 3000;
+
+app.use(cors());
+
+app.use(express.json({
+    limit: '50mb'
 }));
 
-app.options('*', cors()); 
+app.use(express.urlencoded({
+    extended: true,
+    limit: '50mb'
+}));
 
-app.use(bodyParser.json({ limit: '50mb' }));
+// ============================================================
+// CONFIGURAÇÕES
+// ============================================================
 
-console.log('🚀 API SharePoint Global Plastic a iniciar...');
+const TENANT_ID = process.env.TENANT_ID;
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
 
-const COLUMN_MAPPING = {
-    'Title': (row) => row['N° do ticket'] + ' - ' + row.Item + ' - ' + row.Motivo,
-    'N_x00b0_doticket': (row) => row['N° do ticket'],
-    'NomedoCliente': (row) => row['Nome do Cliente'],
-    'Item': (row) => row.Item,
-    'Qtde': (row) => String(row.Qtde),
-    'Motivo': (row) => row.Motivo,
-    'Origemdodefeito': (row) => row['Origem do defeito'],
-    'Disposi_x00e7__x00e3_o': (row) => row.Disposição,
-    'Disposi_x00e7__x00e3_odaspe_x00e': (row) => row['Disposição das peças'],
-    'DatadeGera_x00e7__x00e3_o': (row) => row['Data de Geração'] || '',
-    'Foto1': (row) => row['Foto 1'] || null,
-    'Foto2': (row) => row['Foto 2'] || null,
-    'Foto3': (row) => row['Foto 3'] || null,
-    'Foto4': (row) => row['Foto 4'] || null,
-    'Foto5': (row) => row['Foto 5'] || null,
-    'Foto6': (row) => row['Foto 6'] || null,
-    'Foto7': (row) => row['Foto 7'] || null,
-    'Foto8': (row) => row['Foto 8'] || null,
-    'Foto9': (row) => row['Foto 9'] || null,
-    'Foto10': (row) => row['Foto 10'] || null,
-};
+const SHAREPOINT_HOSTNAME =
+    process.env.SHAREPOINT_HOSTNAME;
 
-async function getAccessToken(retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const params = new URLSearchParams();
-      params.append('client_id', process.env.CLIENT_ID);
-      params.append('scope', 'https://graph.microsoft.com/.default');
-      params.append('client_secret', process.env.CLIENT_SECRET);
-      params.append('grant_type', 'client_credentials');
-      
-      const res = await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`, {
-        method: 'POST',
-        body: params,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      });
-      
-      const data = await res.json();
-      if (!data.access_token) throw new Error(`Erro na autenticação: ${data.error_description || data.error}`);
-      return data.access_token;
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
-    }
-  }
+const SHAREPOINT_SITE_PATH =
+    process.env.SHAREPOINT_SITE_PATH;
+
+const LIBRARY_NAME =
+    process.env.LIBRARY_NAME;
+
+const FOLDER_PATH =
+    process.env.FOLDER_PATH || 'Laudos';
+
+const LIST_NAME =
+    process.env.LIST_NAME;
+
+
+// ============================================================
+// INICIALIZAÇÃO
+// ============================================================
+
+console.log(
+    '🚀 API SharePoint Global Plastic a iniciar...'
+);
+
+
+// ============================================================
+// AUTENTICAÇÃO MICROSOFT
+// ============================================================
+
+async function getAccessToken() {
+
+    try {
+
+        const tokenUrl =
+            `https://login.microsoftonline.com/` +
+            `${TENANT_ID}/oauth2/v2.0/token`;
+
+        const params =
+            new URLSearchParams();
+
+        params.append(
+            'client_id',
+            CLIENT_ID
+        );
+
+        params.append(
+            'client_secret',
+            CLIENT_SECRET
+        );
+
+        params.append(
+            'scope',
+            'https://graph.microsoft.com/.default'
+        );
+
+        params.append(
+            'grant_type',
+            'client_credentials'
+        );
+
+        const response =
+            await axios.post(
+                tokenUrl,
+                params.toString(),
+                {
+                    headers: {
+                        'Content-Type':
+                            'application/x-www-form-urlencoded'
+                    }
+                }
+            );
+
+        return response.data.access_token;
+
+    } catch (error) {
+
+        const message =
+            error.response?.data?.error_description ||
+            error.response?.data?.error?.message ||
+            error.message;
+
+        console.error(
+            '❌ Erro autenticação:',
+            message
+        );
+
+        throw new Error(
+            `Erro na autenticação: ${message}`
+        );
+    }
 }
 
-async function getDriveId(accessToken) {
-    const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/drives`;
-    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Erro ao buscar drives: ${res.status}`);
-    const { value: drives } = await res.json();
-    const library = drives.find(d => d.name === process.env.LIBRARY_NAME);
-    if (!library) throw new Error(`Biblioteca "${process.env.LIBRARY_NAME}" não encontrada.`);
-    return library.id;
+
+// ============================================================
+// SITE ID
+// ============================================================
+
+async function getSiteId(accessToken) {
+
+    try {
+
+        const url =
+            `https://graph.microsoft.com/v1.0/sites/` +
+            `${SHAREPOINT_HOSTNAME}:` +
+            `${SHAREPOINT_SITE_PATH}`;
+
+        const response =
+            await axios.get(
+                url,
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${accessToken}`
+                    }
+                }
+            );
+
+        return response.data.id;
+
+    } catch (error) {
+
+        const message =
+            error.response?.data?.error?.message ||
+            error.message;
+
+        console.error(
+            '❌ Erro ao localizar site:',
+            message
+        );
+
+        throw new Error(
+            `Erro ao localizar site: ${message}`
+        );
+    }
 }
 
-async function getListId(accessToken) {
-    const listName = process.env.LIST_NAME;
-    const url = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists?$filter=displayName eq '${encodeURIComponent(listName)}'`;
-    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Erro ao buscar listas: ${res.status}`);
-    const { value: lists } = await res.json();
-    if (lists.length > 0) return lists[0].id;
-    throw new Error(`Lista "${listName}" não encontrada.`);
+
+// ============================================================
+// DRIVE / BIBLIOTECA
+// ============================================================
+
+async function getDriveId(
+    accessToken,
+    siteId = null
+) {
+
+    try {
+
+        if (!siteId) {
+            siteId =
+                await getSiteId(
+                    accessToken
+                );
+        }
+
+        const url =
+            `https://graph.microsoft.com/v1.0/` +
+            `sites/${siteId}/drives`;
+
+        const response =
+            await axios.get(
+                url,
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${accessToken}`
+                    }
+                }
+            );
+
+        const drives =
+            response.data.value || [];
+
+        const drive =
+            drives.find(
+                item =>
+                    item.name
+                        .trim()
+                        .toLowerCase() ===
+                    LIBRARY_NAME
+                        .trim()
+                        .toLowerCase()
+            );
+
+        if (!drive) {
+
+            throw new Error(
+                `Biblioteca "${LIBRARY_NAME}" ` +
+                `não encontrada.`
+            );
+        }
+
+        return drive.id;
+
+    } catch (error) {
+
+        const message =
+            error.response?.data?.error?.message ||
+            error.message;
+
+        throw new Error(
+            `Erro ao localizar biblioteca: ${message}`
+        );
+    }
 }
 
-app.get('/', (req, res) => res.json({ status: 'online', timestamp: new Date().toISOString() }));
 
-app.get('/check-status/:ticketNumber', async (req, res) => {
-    const { ticketNumber } = req.params;
-    try {
-        const accessToken = await getAccessToken();
-        const siteId = process.env.SITE_ID;
-        const driveId = await getDriveId(accessToken);
-        const listId = await getListId(accessToken);
+// ============================================================
+// LISTA SHAREPOINT
+// ============================================================
 
-        const listUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields($select=N_x00b0_doticket)&$filter=fields/N_x00b0_doticket eq '${ticketNumber}'`;
-        const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-        
-        let existsInList = false;
-        if (listRes.ok) {
-             const data = await listRes.json();
-             existsInList = data.value && data.value.length > 0;
-        }
+async function getListId(
+    accessToken,
+    siteId
+) {
 
-        const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
-        const pdfNamePart = `Laudo - ${ticketNumber}-`;
-        const driveUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}:/search(q='${pdfNamePart}')`;
-        const driveRes = await fetch(driveUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-        
-        let existsInPdf = false;
-        if (driveRes.ok) {
-            const data = await driveRes.json();
-            existsInPdf = data.value && data.value.some(f => f.name.includes(ticketNumber) && f.name.endsWith('.pdf'));
-        }
+    try {
 
-        res.json({ existsInList, existsInPdf });
+        const url =
+            `https://graph.microsoft.com/v1.0/` +
+            `sites/${siteId}/lists`;
 
-    } catch (error) {
-        console.error(`Erro check-status:`, error.message);
-        res.status(500).json({ error: error.message });
-    }
-});
+        const response =
+            await axios.get(
+                url,
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${accessToken}`
+                    }
+                }
+            );
 
-app.post('/upload-pdf', async (req, res) => {
-  const { fileName, fileBase64 } = req.body;
-  if (!fileName || !fileBase64) return res.status(400).json({ error: 'Dados incompletos' });
+        const lists =
+            response.data.value || [];
 
-  try {
-    const accessToken = await getAccessToken();
-    const driveId = await getDriveId(accessToken);
-    const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
-    const encodedFileName = encodeURIComponent(fileName);
-    const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}/${encodedFileName}:/content`;
-    
-    const response = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/pdf' },
-      body: Buffer.from(fileBase64, 'base64')
-    });
+        const list =
+            lists.find(
+                item =>
+                    item.displayName
+                        .trim()
+                        .toLowerCase() ===
+                    LIST_NAME
+                        .trim()
+                        .toLowerCase()
+            );
 
-    if (!response.ok) throw new Error(`SharePoint Error ${response.status}`);
-    const result = await response.json();
-    res.status(200).json({ success: true, sharePointUrl: result.webUrl });
-  } catch (error) {
-    console.error(`❌ Erro PDF:`, error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+        if (!list) {
 
-app.post('/upload-list-data', async (req, res) => {
-    const { listData } = req.body;
-    if (!listData || listData.length === 0) return res.status(400).json({ success: false, error: 'Sem dados' });
+            throw new Error(
+                `Lista "${LIST_NAME}" ` +
+                `não encontrada.`
+            );
+        }
 
-    try {
-        const accessToken = await getAccessToken();
-        const listId = await getListId(accessToken); 
-        const listItemsUrl = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items`;
+        return list.id;
 
-        const insertionPromises = listData.map(async (row) => {
-            const itemFields = {};
-            for (const key in COLUMN_MAPPING) {
-                const val = COLUMN_MAPPING[key](row);
-                if (val !== null && val !== '' && val !== undefined) itemFields[key] = val;
-            }
-            
-            const itemResponse = await fetch(listItemsUrl, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fields: itemFields })
-            });
+    } catch (error) {
 
-            if (!itemResponse.ok) throw new Error(`Status: ${itemResponse.status}`);
-            return itemResponse.json();
-        });
+        const message =
+            error.response?.data?.error?.message ||
+            error.message;
 
-        await Promise.all(insertionPromises);
-        res.status(200).json({ success: true });
-    } catch (error) {
-        console.error(`❌ Erro lista:`, error.message);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
+        throw new Error(
+            `Erro ao localizar lista: ${message}`
+        );
+    }
+}
 
-app.delete('/delete-pdf-by-ticket-number/:ticketNumber', async (req, res) => {
-    const { ticketNumber } = req.params;
-    if (!ticketNumber) return res.status(400).json({ error: 'Ticket obrigatório' });
 
-    try {
-        const accessToken = await getAccessToken();
-        const driveId = await getDriveId(accessToken);
-        const encodedFolder = encodeURIComponent(process.env.FOLDER_PATH);
-        const listUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedFolder}:/children`;
-        
-        const listResponse = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-        if (!listResponse.ok) throw new Error(`Erro listagem`);
-        const { value: allFiles } = await listResponse.json();
-        
-        const filesToDelete = allFiles.filter(file => file.name.startsWith(`Laudo - ${ticketNumber}-`));
-        if (filesToDelete.length === 0) return res.json({ success: true, message: 'Nada a excluir.' });
+// ============================================================
+// NORMALIZA TICKET
+// ============================================================
 
-        await Promise.all(filesToDelete.map(file => 
-            fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${file.id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${accessToken}` } })
-        ));
-        res.status(200).json({ success: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
+function normalizeTicket(ticket) {
 
-app.delete('/clear-list', async (req, res) => {
-    try {
-        const accessToken = await getAccessToken();
-        const listId = await getListId(accessToken);
-        let itemsToDelete = [];
-        let nextLink = `https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items?$select=id`;
-        
-        while (nextLink) {
-            const response = await fetch(nextLink, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-            if (!response.ok) throw new Error(`Erro busca`);
-            const data = await response.json();
-            if (data.value) itemsToDelete = itemsToDelete.concat(data.value);
-            nextLink = data['@odata.nextLink'];
-        }
+    if (!ticket) {
+        return '';
+    }
 
-        if (itemsToDelete.length === 0) return res.status(200).json({ success: true, message: 'Lista vazia.' });
+    return String(ticket)
+        .trim()
+        .toUpperCase()
+        .replace(
+            /[^A-Z0-9-]/g,
+            ''
+        );
+}
 
-        const BATCH_SIZE = 10;
-        for (let i = 0; i < itemsToDelete.length; i += BATCH_SIZE) {
-            const batch = itemsToDelete.slice(i, i + BATCH_SIZE);
-            await Promise.all(batch.map(item => 
-                fetch(`https://graph.microsoft.com/v1.0/sites/${process.env.SITE_ID}/lists/${listId}/items/${item.id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${accessToken}` } })
-            ));
-        }
-        res.status(200).json({ success: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 API online na porta ${PORT}`));
+// ============================================================
+// IDENTIFICA TICKET PELO NOME DO PDF
+// ============================================================
+//
+// Exemplos reconhecidos:
+//
+// Laudo - SR-7382-17913948365.pdf
+// Laudo - SR-7382-179134602920.pdf
+// Laudo - SR-7382-20261007 1426.pdf
+// Laudo - 12345-20261007 1426.pdf
+//
+// Retorna:
+//
+// SR-7382
+// 12345
+//
+// ============================================================
+
+function extractTicketNumber(
+    fileName
+) {
+
+    if (!fileName) {
+        return null;
+    }
+
+    const name =
+        String(fileName).trim();
+
+    if (
+        !name
+            .toLowerCase()
+            .endsWith('.pdf')
+    ) {
+        return null;
+    }
+
+    /*
+     * Ticket padrão SR-9999
+     */
+
+    let match =
+        name.match(
+            /^Laudo\s*-\s*(SR-\d+)-.+\.pdf$/i
+        );
+
+    if (match) {
+
+        return normalizeTicket(
+            match[1]
+        );
+    }
+
+    /*
+     * Outros prefixos:
+     *
+     * OS-123
+     * TK-123
+     * ABC-123
+     */
+
+    match =
+        name.match(
+            /^Laudo\s*-\s*([A-Za-z]+-\d+)-.+\.pdf$/i
+        );
+
+    if (match) {
+
+        return normalizeTicket(
+            match[1]
+        );
+    }
+
+    /*
+     * Ticket somente numérico
+     */
+
+    match =
+        name.match(
+            /^Laudo\s*-\s*(\d+)-.+\.pdf$/i
+        );
+
+    if (match) {
+
+        return normalizeTicket(
+            match[1]
+        );
+    }
+
+    return null;
+}
+
+
+// ============================================================
+// LISTAR TODOS OS ARQUIVOS DA PASTA
+// ============================================================
+
+async function getAllFilesFromFolder(
+    accessToken,
+    driveId
+) {
+
+    const files = [];
+
+    const cleanFolderPath =
+        FOLDER_PATH
+            .replace(/^\/+/, '')
+            .replace(/\/+$/, '');
+
+    const encodedPath =
+        cleanFolderPath
+            .split('/')
+            .map(
+                part =>
+                    encodeURIComponent(part)
+            )
+            .join('/');
+
+    let url =
+        `https://graph.microsoft.com/v1.0/` +
+        `drives/${driveId}/root:/` +
+        `${encodedPath}:/children` +
+        `?$top=200&` +
+        `$select=id,name,file,folder,` +
+        `createdDateTime,lastModifiedDateTime,size`;
+
+    while (url) {
+
+        const response =
+            await axios.get(
+                url,
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${accessToken}`
+                    }
+                }
+            );
+
+        if (
+            response.data &&
+            Array.isArray(
+                response.data.value
+            )
+        ) {
+
+            files.push(
+                ...response.data.value
+            );
+        }
+
+        url =
+            response.data[
+                '@odata.nextLink'
+            ] || null;
+    }
+
+    return files;
+}
+
+
+// ============================================================
+// VERIFICA SE PDF EXISTE
+// ============================================================
+
+async function ticketPdfExists(
+    accessToken,
+    driveId,
+    ticketNumber
+) {
+
+    const ticket =
+        normalizeTicket(
+            ticketNumber
+        );
+
+    const files =
+        await getAllFilesFromFolder(
+            accessToken,
+            driveId
+        );
+
+    return files.some(
+        file => {
+
+            if (!file.file) {
+                return false;
+            }
+
+            const fileTicket =
+                extractTicketNumber(
+                    file.name
+                );
+
+            return (
+                fileTicket === ticket
+            );
+        }
+    );
+}
+
+
+// ============================================================
+// VERIFICA SE TICKET EXISTE NA LISTA
+// ============================================================
+
+async function ticketExistsInList(
+    accessToken,
+    siteId,
+    listId,
+    ticketNumber
+) {
+
+    const ticket =
+        String(
+            ticketNumber
+        ).trim();
+
+    let url =
+        `https://graph.microsoft.com/v1.0/` +
+        `sites/${siteId}/lists/` +
+        `${listId}/items` +
+        `?$expand=fields&$top=200`;
+
+    while (url) {
+
+        const response =
+            await axios.get(
+                url,
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${accessToken}`
+                    }
+                }
+            );
+
+        const items =
+            response.data.value || [];
+
+        const found =
+            items.some(
+                item => {
+
+                    const fields =
+                        item.fields || {};
+
+                    const possibleValues = [
+                        fields['N_x00b0__x0020_do_x0020_ticket'],
+                        fields['N_x00b0_do_x0020_ticket'],
+                        fields['NumeroTicket'],
+                        fields['Ticket'],
+                        fields['Title']
+                    ];
+
+                    return possibleValues
+                        .filter(
+                            value =>
+                                value !== undefined &&
+                                value !== null
+                        )
+                        .some(
+                            value =>
+                                String(value)
+                                    .trim()
+                                    .toUpperCase() ===
+                                ticket
+                                    .toUpperCase()
+                        );
+                }
+            );
+
+        if (found) {
+            return true;
+        }
+
+        url =
+            response.data[
+                '@odata.nextLink'
+            ] || null;
+    }
+
+    return false;
+}
+
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
+
+app.get(
+    '/',
+    (req, res) => {
+
+        res.json({
+            status: 'online',
+            timestamp:
+                new Date()
+                    .toISOString()
+        });
+    }
+);
+
+
+// ============================================================
+// CHECK STATUS
+// ============================================================
+
+app.get(
+    '/check-status/:ticketNumber',
+    async (req, res) => {
+
+        try {
+
+            const ticketNumber =
+                normalizeTicket(
+                    req.params.ticketNumber
+                );
+
+            if (!ticketNumber) {
+
+                return res
+                    .status(400)
+                    .json({
+                        success: false,
+                        error:
+                            'Número do ticket não informado.'
+                    });
+            }
+
+            console.log(
+                `🔎 Verificando ticket ${ticketNumber}...`
+            );
+
+            const accessToken =
+                await getAccessToken();
+
+            const siteId =
+                await getSiteId(
+                    accessToken
+                );
+
+            const driveId =
+                await getDriveId(
+                    accessToken,
+                    siteId
+                );
+
+            const listId =
+                await getListId(
+                    accessToken,
+                    siteId
+                );
+
+            const [
+                existsInPdf,
+                existsInList
+            ] =
+                await Promise.all([
+                    ticketPdfExists(
+                        accessToken,
+                        driveId,
+                        ticketNumber
+                    ),
+
+                    ticketExistsInList(
+                        accessToken,
+                        siteId,
+                        listId,
+                        ticketNumber
+                    )
+                ]);
+
+            console.log(
+                `🔎 ${ticketNumber} | ` +
+                `PDF: ${existsInPdf} | ` +
+                `Lista: ${existsInList}`
+            );
+
+            return res.json({
+                success: true,
+                ticketNumber,
+                existsInPdf,
+                existsInList
+            });
+
+        } catch (error) {
+
+            console.error(
+                '❌ Erro check-status:',
+                error.message
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success: false,
+                    error:
+                        error.message
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// UPLOAD PDF
+// ============================================================
+
+app.post(
+    '/upload-pdf',
+    async (req, res) => {
+
+        try {
+
+            const {
+                fileName,
+                fileBase64,
+                ticketNumber,
+                ticketTitle,
+                isReport
+            } = req.body;
+
+            if (
+                !fileName ||
+                !fileBase64
+            ) {
+
+                return res
+                    .status(400)
+                    .json({
+                        success: false,
+                        error:
+                            'fileName e fileBase64 são obrigatórios.'
+                    });
+            }
+
+            console.log(
+                `📄 Upload PDF: ${fileName}`
+            );
+
+            const accessToken =
+                await getAccessToken();
+
+            const siteId =
+                await getSiteId(
+                    accessToken
+                );
+
+            const driveId =
+                await getDriveId(
+                    accessToken,
+                    siteId
+                );
+
+            const cleanFolderPath =
+                FOLDER_PATH
+                    .replace(/^\/+/, '')
+                    .replace(/\/+$/, '');
+
+            const encodedPath =
+                cleanFolderPath
+                    .split('/')
+                    .map(
+                        part =>
+                            encodeURIComponent(part)
+                    )
+                    .join('/');
+
+            const encodedFileName =
+                encodeURIComponent(
+                    fileName
+                );
+
+            const uploadUrl =
+                `https://graph.microsoft.com/v1.0/` +
+                `drives/${driveId}/root:/` +
+                `${encodedPath}/` +
+                `${encodedFileName}:/content`;
+
+            const buffer =
+                Buffer.from(
+                    fileBase64,
+                    'base64'
+                );
+
+            const response =
+                await axios.put(
+                    uploadUrl,
+                    buffer,
+                    {
+                        headers: {
+                            Authorization:
+                                `Bearer ${accessToken}`,
+                            'Content-Type':
+                                'application/pdf'
+                        },
+                        maxBodyLength:
+                            Infinity,
+                        maxContentLength:
+                            Infinity
+                    }
+                );
+
+            console.log(
+                `✅ PDF enviado: ${fileName}`
+            );
+
+            return res.json({
+                success: true,
+                message:
+                    'PDF enviado com sucesso.',
+                file: {
+                    id:
+                        response.data.id,
+                    name:
+                        response.data.name,
+                    webUrl:
+                        response.data.webUrl
+                }
+            });
+
+        } catch (error) {
+
+            const message =
+                error.response?.data?.error?.message ||
+                error.message;
+
+            console.error(
+                '❌ Erro PDF:',
+                message
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success: false,
+                    error: message
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// UPLOAD LIST DATA
+// ============================================================
+
+app.post(
+    '/upload-list-data',
+    async (req, res) => {
+
+        try {
+
+            const {
+                ticketNumber,
+                listData
+            } = req.body;
+
+            if (
+                !Array.isArray(
+                    listData
+                ) ||
+                listData.length === 0
+            ) {
+
+                return res
+                    .status(400)
+                    .json({
+                        success: false,
+                        error:
+                            'listData não informado.'
+                    });
+            }
+
+            const accessToken =
+                await getAccessToken();
+
+            const siteId =
+                await getSiteId(
+                    accessToken
+                );
+
+            const listId =
+                await getListId(
+                    accessToken,
+                    siteId
+                );
+
+            let inserted = 0;
+
+            for (
+                const row
+                of listData
+            ) {
+
+                const fields = {
+                    Title:
+                        String(
+                            row[
+                                'N° do ticket'
+                            ] ||
+                            ticketNumber ||
+                            ''
+                        ),
+
+                    NumeroTicket:
+                        String(
+                            row[
+                                'N° do ticket'
+                            ] ||
+                            ticketNumber ||
+                            ''
+                        ),
+
+                    NomeCliente:
+                        row[
+                            'Nome do Cliente'
+                        ] || '',
+
+                    Item:
+                        String(
+                            row.Item || ''
+                        ),
+
+                    Qtde:
+                        row.Qtde || 0,
+
+                    Motivo:
+                        Array.isArray(
+                            row.Motivo
+                        )
+                            ? row.Motivo.join(
+                                ', '
+                            )
+                            : (
+                                row.Motivo ||
+                                ''
+                            ),
+
+                    OrigemDefeito:
+                        row[
+                            'Origem do defeito'
+                        ] || '',
+
+                    Disposicao:
+                        row[
+                            'Disposição'
+                        ] || '',
+
+                    DisposicaoPecas:
+                        row[
+                            'Disposição das peças'
+                        ] || '',
+
+                    DataGeracao:
+                        row[
+                            'Data de Geração'
+                        ] || ''
+                };
+
+                for (
+                    let i = 1;
+                    i <= 10;
+                    i++
+                ) {
+
+                    const value =
+                        row[
+                            `Foto ${i}`
+                        ];
+
+                    if (value) {
+
+                        fields[
+                            `Foto${i}`
+                        ] = value;
+                    }
+                }
+
+                const url =
+                    `https://graph.microsoft.com/v1.0/` +
+                    `sites/${siteId}/lists/` +
+                    `${listId}/items`;
+
+                await axios.post(
+                    url,
+                    {
+                        fields
+                    },
+                    {
+                        headers: {
+                            Authorization:
+                                `Bearer ${accessToken}`,
+                            'Content-Type':
+                                'application/json'
+                        }
+                    }
+                );
+
+                inserted++;
+            }
+
+            console.log(
+                `✅ Lista: ${ticketNumber} | ` +
+                `${inserted} linha(s)`
+            );
+
+            return res.json({
+                success: true,
+                inserted
+            });
+
+        } catch (error) {
+
+            const message =
+                error.response?.data?.error?.message ||
+                error.message;
+
+            console.error(
+                '❌ Erro lista:',
+                message
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success: false,
+                    error: message
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// EXCLUI TODOS OS PDFs DE UM TICKET
+// ============================================================
+
+app.delete(
+    '/delete-pdf-by-ticket-number/:ticketNumber',
+    async (req, res) => {
+
+        try {
+
+            const ticketNumber =
+                normalizeTicket(
+                    req.params.ticketNumber
+                );
+
+            const accessToken =
+                await getAccessToken();
+
+            const siteId =
+                await getSiteId(
+                    accessToken
+                );
+
+            const driveId =
+                await getDriveId(
+                    accessToken,
+                    siteId
+                );
+
+            const files =
+                await getAllFilesFromFolder(
+                    accessToken,
+                    driveId
+                );
+
+            const matchingFiles =
+                files.filter(
+                    file =>
+                        file.file &&
+                        extractTicketNumber(
+                            file.name
+                        ) ===
+                        ticketNumber
+                );
+
+            let deleted = 0;
+
+            for (
+                const file
+                of matchingFiles
+            ) {
+
+                const deleteUrl =
+                    `https://graph.microsoft.com/v1.0/` +
+                    `drives/${driveId}/items/` +
+                    `${file.id}`;
+
+                await axios.delete(
+                    deleteUrl,
+                    {
+                        headers: {
+                            Authorization:
+                                `Bearer ${accessToken}`
+                        }
+                    }
+                );
+
+                deleted++;
+
+                console.log(
+                    `🗑️ PDF excluído: ${file.name}`
+                );
+            }
+
+            return res.json({
+                success: true,
+                ticketNumber,
+                deleted
+            });
+
+        } catch (error) {
+
+            const message =
+                error.response?.data?.error?.message ||
+                error.message;
+
+            console.error(
+                '❌ Erro ao excluir PDF:',
+                message
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success: false,
+                    error: message
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// LIMPEZA DE PDFs DUPLICADOS
+// ============================================================
+//
+// IMPORTANTE:
+//
+// Mantém somente UM PDF por ticket.
+//
+// Exemplo:
+//
+// Laudo - SR-7382-17913948365.pdf
+// Laudo - SR-7382-179134602920.pdf
+//
+// Ambos são identificados como:
+//
+// SR-7382
+//
+// O arquivo mais recentemente modificado no SharePoint é mantido.
+//
+// ============================================================
+
+app.post(
+    '/cleanup-duplicate-pdfs',
+    async (req, res) => {
+
+        try {
+
+            console.log(
+                '🧹 Iniciando limpeza de PDFs duplicados...'
+            );
+
+            const accessToken =
+                await getAccessToken();
+
+            const siteId =
+                await getSiteId(
+                    accessToken
+                );
+
+            const driveId =
+                await getDriveId(
+                    accessToken,
+                    siteId
+                );
+
+            const files =
+                await getAllFilesFromFolder(
+                    accessToken,
+                    driveId
+                );
+
+            console.log(
+                `📂 ${files.length} arquivo(s) encontrado(s).`
+            );
+
+            const ticketGroups =
+                new Map();
+
+            for (
+                const file
+                of files
+            ) {
+
+                /*
+                 * Ignora pastas
+                 */
+
+                if (!file.file) {
+                    continue;
+                }
+
+                /*
+                 * Ignora arquivos não PDF
+                 */
+
+                if (
+                    !file.name ||
+                    !file.name
+                        .toLowerCase()
+                        .endsWith('.pdf')
+                ) {
+                    continue;
+                }
+
+                /*
+                 * Identifica ticket
+                 */
+
+                const ticketNumber =
+                    extractTicketNumber(
+                        file.name
+                    );
+
+                /*
+                 * Não reconheceu como laudo.
+                 * Não mexe no arquivo.
+                 */
+
+                if (!ticketNumber) {
+
+                    console.log(
+                        `ℹ️ Ignorado: ${file.name}`
+                    );
+
+                    continue;
+                }
+
+                if (
+                    !ticketGroups.has(
+                        ticketNumber
+                    )
+                ) {
+
+                    ticketGroups.set(
+                        ticketNumber,
+                        []
+                    );
+                }
+
+                ticketGroups
+                    .get(ticketNumber)
+                    .push(file);
+            }
+
+
+            const duplicates = [];
+            const deletedFiles = [];
+            const keptFiles = [];
+
+            /*
+             * Percorre cada ticket
+             */
+
+            for (
+                const [
+                    ticketNumber,
+                    ticketFiles
+                ]
+                of ticketGroups.entries()
+            ) {
+
+                /*
+                 * Apenas um PDF.
+                 * Não existe duplicidade.
+                 */
+
+                if (
+                    ticketFiles.length <= 1
+                ) {
+                    continue;
+                }
+
+                console.log(
+                    `⚠️ ${ticketNumber}: ` +
+                    `${ticketFiles.length} PDFs encontrados.`
+                );
+
+                /*
+                 * Ordena pelo lastModifiedDateTime.
+                 *
+                 * Mais recente fica na posição 0.
+                 */
+
+                ticketFiles.sort(
+                    (a, b) => {
+
+                        const dateA =
+                            new Date(
+                                a.lastModifiedDateTime ||
+                                a.createdDateTime ||
+                                0
+                            ).getTime();
+
+                        const dateB =
+                            new Date(
+                                b.lastModifiedDateTime ||
+                                b.createdDateTime ||
+                                0
+                            ).getTime();
+
+                        return (
+                            dateB -
+                            dateA
+                        );
+                    }
+                );
+
+                /*
+                 * Mantém o mais recente
+                 */
+
+                const keepFile =
+                    ticketFiles[0];
+
+                /*
+                 * Todos os outros
+                 * são duplicados
+                 */
+
+                const filesToDelete =
+                    ticketFiles.slice(1);
+
+                console.log(
+                    `✅ ${ticketNumber}: ` +
+                    `mantendo "${keepFile.name}"`
+                );
+
+                keptFiles.push({
+                    ticketNumber,
+                    fileName:
+                        keepFile.name,
+                    modified:
+                        keepFile.lastModifiedDateTime
+                });
+
+                duplicates.push({
+                    ticketNumber,
+                    total:
+                        ticketFiles.length,
+                    keep:
+                        keepFile.name,
+                    delete:
+                        filesToDelete.map(
+                            file =>
+                                file.name
+                        )
+                });
+
+
+                /*
+                 * Exclui PDFs antigos
+                 */
+
+                for (
+                    const file
+                    of filesToDelete
+                ) {
+
+                    const deleteUrl =
+                        `https://graph.microsoft.com/v1.0/` +
+                        `drives/${driveId}/items/` +
+                        `${file.id}`;
+
+                    await axios.delete(
+                        deleteUrl,
+                        {
+                            headers: {
+                                Authorization:
+                                    `Bearer ${accessToken}`
+                            }
+                        }
+                    );
+
+                    console.log(
+                        `🗑️ Excluído: ${file.name}`
+                    );
+
+                    deletedFiles.push({
+                        ticketNumber,
+                        fileName:
+                            file.name
+                    });
+                }
+            }
+
+
+            console.log(
+                '✅ Limpeza concluída.'
+            );
+
+            console.log(
+                `🗑️ ${deletedFiles.length} ` +
+                `PDF(s) duplicado(s) removido(s).`
+            );
+
+
+            return res.json({
+
+                success: true,
+
+                message:
+                    `${deletedFiles.length} ` +
+                    `PDF(s) duplicado(s) removido(s).`,
+
+                totalFilesChecked:
+                    files.length,
+
+                ticketsChecked:
+                    ticketGroups.size,
+
+                ticketsWithDuplicates:
+                    duplicates.length,
+
+                deletedCount:
+                    deletedFiles.length,
+
+                duplicates,
+
+                keptFiles,
+
+                deletedFiles
+            });
+
+        } catch (error) {
+
+            const message =
+                error.response?.data?.error?.message ||
+                error.message;
+
+            console.error(
+                '❌ Erro ao limpar PDFs duplicados:',
+                message
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success: false,
+                    error: message
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// LIMPAR LISTA SHAREPOINT
+// ============================================================
+//
+// ATENÇÃO:
+// Essa rota continua separada.
+// Ela NÃO é chamada pela limpeza de PDFs duplicados.
+//
+// ============================================================
+
+app.delete(
+    '/clear-list',
+    async (req, res) => {
+
+        try {
+
+            console.log(
+                '⚠️ Iniciando limpeza total da lista...'
+            );
+
+            const accessToken =
+                await getAccessToken();
+
+            const siteId =
+                await getSiteId(
+                    accessToken
+                );
+
+            const listId =
+                await getListId(
+                    accessToken,
+                    siteId
+                );
+
+            let url =
+                `https://graph.microsoft.com/v1.0/` +
+                `sites/${siteId}/lists/` +
+                `${listId}/items?$top=200`;
+
+            let deleted = 0;
+
+            while (url) {
+
+                const response =
+                    await axios.get(
+                        url,
+                        {
+                            headers: {
+                                Authorization:
+                                    `Bearer ${accessToken}`
+                            }
+                        }
+                    );
+
+                const items =
+                    response.data.value || [];
+
+                /*
+                 * Guarda nextLink ANTES
+                 * de começar a excluir.
+                 */
+
+                const nextLink =
+                    response.data[
+                        '@odata.nextLink'
+                    ] || null;
+
+                for (
+                    const item
+                    of items
+                ) {
+
+                    const deleteUrl =
+                        `https://graph.microsoft.com/v1.0/` +
+                        `sites/${siteId}/lists/` +
+                        `${listId}/items/` +
+                        `${item.id}`;
+
+                    await axios.delete(
+                        deleteUrl,
+                        {
+                            headers: {
+                                Authorization:
+                                    `Bearer ${accessToken}`
+                            }
+                        }
+                    );
+
+                    deleted++;
+                }
+
+                url =
+                    nextLink;
+            }
+
+            console.log(
+                `✅ ${deleted} registro(s) removido(s).`
+            );
+
+            return res.json({
+                success: true,
+                deleted,
+                message:
+                    `${deleted} registro(s) ` +
+                    `foram removidos da lista.`
+            });
+
+        } catch (error) {
+
+            const message =
+                error.response?.data?.error?.message ||
+                error.message;
+
+            console.error(
+                '❌ Erro ao limpar lista:',
+                message
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success: false,
+                    error: message
+                });
+        }
+    }
+);
+
+
+// ============================================================
+// TRATAMENTO DE ROTA NÃO ENCONTRADA
+// ============================================================
+
+app.use(
+    (req, res) => {
+
+        res.status(404).json({
+            success: false,
+            error:
+                `Rota não encontrada: ` +
+                `${req.method} ${req.originalUrl}`
+        });
+    }
+);
+
+
+// ============================================================
+// INICIA SERVIDOR
+// ============================================================
+
+app.listen(
+    PORT,
+    '0.0.0.0',
+    () => {
+
+        console.log(
+            `🌐 API online na porta ${PORT}`
+        );
+
+        console.log(
+            `📂 Pasta de laudos: ${FOLDER_PATH}`
+        );
+
+        console.log(
+            `📚 Biblioteca: ${LIBRARY_NAME}`
+        );
+
+        console.log(
+            `📋 Lista: ${LIST_NAME}`
+        );
+    }
+);
