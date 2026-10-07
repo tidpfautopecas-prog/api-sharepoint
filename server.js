@@ -1,23 +1,29 @@
-require('dotenv').config();
-
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import axios from 'axios';
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
+
+// ============================================================
+// MIDDLEWARES
+// ============================================================
 
 app.use(cors());
 
-app.use(express.json({
-    limit: '50mb'
-}));
+app.use(
+    express.json({
+        limit: '50mb'
+    })
+);
 
-app.use(express.urlencoded({
-    extended: true,
-    limit: '50mb'
-}));
+app.use(
+    express.urlencoded({
+        extended: true,
+        limit: '50mb'
+    })
+);
 
 // ============================================================
 // CONFIGURAÇÕES
@@ -42,7 +48,6 @@ const FOLDER_PATH =
 const LIST_NAME =
     process.env.LIST_NAME;
 
-
 // ============================================================
 // INICIALIZAÇÃO
 // ============================================================
@@ -51,6 +56,36 @@ console.log(
     '🚀 API SharePoint Global Plastic a iniciar...'
 );
 
+// ============================================================
+// VALIDAÇÃO DAS VARIÁVEIS
+// ============================================================
+
+function validateEnvironment() {
+
+    const requiredVariables = [
+        'TENANT_ID',
+        'CLIENT_ID',
+        'CLIENT_SECRET',
+        'SHAREPOINT_HOSTNAME',
+        'SHAREPOINT_SITE_PATH',
+        'LIBRARY_NAME',
+        'LIST_NAME'
+    ];
+
+    const missing = requiredVariables.filter(
+        variable => !process.env[variable]
+    );
+
+    if (missing.length > 0) {
+
+        console.warn(
+            '⚠️ Variáveis de ambiente não configuradas:',
+            missing.join(', ')
+        );
+    }
+}
+
+validateEnvironment();
 
 // ============================================================
 // AUTENTICAÇÃO MICROSOFT
@@ -119,7 +154,6 @@ async function getAccessToken() {
     }
 }
 
-
 // ============================================================
 // SITE ID
 // ============================================================
@@ -128,10 +162,14 @@ async function getSiteId(accessToken) {
 
     try {
 
+        const sitePath =
+            SHAREPOINT_SITE_PATH.startsWith('/')
+                ? SHAREPOINT_SITE_PATH
+                : `/${SHAREPOINT_SITE_PATH}`;
+
         const url =
             `https://graph.microsoft.com/v1.0/sites/` +
-            `${SHAREPOINT_HOSTNAME}:` +
-            `${SHAREPOINT_SITE_PATH}`;
+            `${SHAREPOINT_HOSTNAME}:${sitePath}`;
 
         const response =
             await axios.get(
@@ -163,7 +201,6 @@ async function getSiteId(accessToken) {
     }
 }
 
-
 // ============================================================
 // DRIVE / BIBLIOTECA
 // ============================================================
@@ -176,6 +213,7 @@ async function getDriveId(
     try {
 
         if (!siteId) {
+
             siteId =
                 await getSiteId(
                     accessToken
@@ -204,18 +242,24 @@ async function getDriveId(
             drives.find(
                 item =>
                     item.name
-                        .trim()
+                        ?.trim()
                         .toLowerCase() ===
                     LIBRARY_NAME
-                        .trim()
+                        ?.trim()
                         .toLowerCase()
             );
 
         if (!drive) {
 
+            const available =
+                drives
+                    .map(item => item.name)
+                    .join(', ');
+
             throw new Error(
                 `Biblioteca "${LIBRARY_NAME}" ` +
-                `não encontrada.`
+                `não encontrada. ` +
+                `Bibliotecas disponíveis: ${available}`
             );
         }
 
@@ -232,7 +276,6 @@ async function getDriveId(
         );
     }
 }
-
 
 // ============================================================
 // LISTA SHAREPOINT
@@ -267,18 +310,24 @@ async function getListId(
             lists.find(
                 item =>
                     item.displayName
-                        .trim()
+                        ?.trim()
                         .toLowerCase() ===
                     LIST_NAME
-                        .trim()
+                        ?.trim()
                         .toLowerCase()
             );
 
         if (!list) {
 
+            const available =
+                lists
+                    .map(item => item.displayName)
+                    .join(', ');
+
             throw new Error(
                 `Lista "${LIST_NAME}" ` +
-                `não encontrada.`
+                `não encontrada. ` +
+                `Listas disponíveis: ${available}`
             );
         }
 
@@ -295,7 +344,6 @@ async function getListId(
         );
     }
 }
-
 
 // ============================================================
 // NORMALIZA TICKET
@@ -316,12 +364,11 @@ function normalizeTicket(ticket) {
         );
 }
 
-
 // ============================================================
-// IDENTIFICA TICKET PELO NOME DO PDF
+// IDENTIFICA O TICKET PELO NOME DO PDF
 // ============================================================
 //
-// Exemplos reconhecidos:
+// Reconhece:
 //
 // Laudo - SR-7382-17913948365.pdf
 // Laudo - SR-7382-179134602920.pdf
@@ -335,9 +382,7 @@ function normalizeTicket(ticket) {
 //
 // ============================================================
 
-function extractTicketNumber(
-    fileName
-) {
+function extractTicketNumber(fileName) {
 
     if (!fileName) {
         return null;
@@ -354,9 +399,9 @@ function extractTicketNumber(
         return null;
     }
 
-    /*
-     * Ticket padrão SR-9999
-     */
+    // --------------------------------------------
+    // SR-7382
+    // --------------------------------------------
 
     let match =
         name.match(
@@ -370,13 +415,12 @@ function extractTicketNumber(
         );
     }
 
-    /*
-     * Outros prefixos:
-     *
-     * OS-123
-     * TK-123
-     * ABC-123
-     */
+    // --------------------------------------------
+    // Outros prefixos:
+    // OS-123
+    // TK-123
+    // ABC-123
+    // --------------------------------------------
 
     match =
         name.match(
@@ -390,9 +434,9 @@ function extractTicketNumber(
         );
     }
 
-    /*
-     * Ticket somente numérico
-     */
+    // --------------------------------------------
+    // Ticket somente numérico
+    // --------------------------------------------
 
     match =
         name.match(
@@ -409,9 +453,8 @@ function extractTicketNumber(
     return null;
 }
 
-
 // ============================================================
-// LISTAR TODOS OS ARQUIVOS DA PASTA
+// LISTA TODOS OS ARQUIVOS DA PASTA
 // ============================================================
 
 async function getAllFilesFromFolder(
@@ -477,9 +520,8 @@ async function getAllFilesFromFolder(
     return files;
 }
 
-
 // ============================================================
-// VERIFICA SE PDF EXISTE
+// VERIFICA SE O PDF DO TICKET EXISTE
 // ============================================================
 
 async function ticketPdfExists(
@@ -518,6 +560,41 @@ async function ticketPdfExists(
     );
 }
 
+// ============================================================
+// OBTÉM VALOR DO TICKET DE UM ITEM DA LISTA
+// ============================================================
+
+function getTicketFromListFields(fields) {
+
+    if (!fields) {
+        return '';
+    }
+
+    const possibleFields = [
+        fields['N_x00b0__x0020_do_x0020_ticket'],
+        fields['N_x00b0_do_x0020_ticket'],
+        fields['N_x00b0__x0020_do_x0020_Ticket'],
+        fields['NumeroTicket'],
+        fields['Ticket'],
+        fields['Title']
+    ];
+
+    for (const value of possibleFields) {
+
+        if (
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== ''
+        ) {
+
+            return normalizeTicket(
+                value
+            );
+        }
+    }
+
+    return '';
+}
 
 // ============================================================
 // VERIFICA SE TICKET EXISTE NA LISTA
@@ -531,9 +608,9 @@ async function ticketExistsInList(
 ) {
 
     const ticket =
-        String(
+        normalizeTicket(
             ticketNumber
-        ).trim();
+        );
 
     let url =
         `https://graph.microsoft.com/v1.0/` +
@@ -559,34 +636,10 @@ async function ticketExistsInList(
 
         const found =
             items.some(
-                item => {
-
-                    const fields =
-                        item.fields || {};
-
-                    const possibleValues = [
-                        fields['N_x00b0__x0020_do_x0020_ticket'],
-                        fields['N_x00b0_do_x0020_ticket'],
-                        fields['NumeroTicket'],
-                        fields['Ticket'],
-                        fields['Title']
-                    ];
-
-                    return possibleValues
-                        .filter(
-                            value =>
-                                value !== undefined &&
-                                value !== null
-                        )
-                        .some(
-                            value =>
-                                String(value)
-                                    .trim()
-                                    .toUpperCase() ===
-                                ticket
-                                    .toUpperCase()
-                        );
-                }
+                item =>
+                    getTicketFromListFields(
+                        item.fields
+                    ) === ticket
             );
 
         if (found) {
@@ -601,7 +654,6 @@ async function ticketExistsInList(
 
     return false;
 }
-
 
 // ============================================================
 // HEALTH CHECK
@@ -619,7 +671,6 @@ app.get(
         });
     }
 );
-
 
 // ============================================================
 // CHECK STATUS
@@ -721,7 +772,6 @@ app.get(
     }
 );
 
-
 // ============================================================
 // UPLOAD PDF
 // ============================================================
@@ -757,6 +807,27 @@ app.post(
             console.log(
                 `📄 Upload PDF: ${fileName}`
             );
+
+            if (ticketNumber) {
+
+                console.log(
+                    `🎫 Ticket: ${ticketNumber}`
+                );
+            }
+
+            if (ticketTitle) {
+
+                console.log(
+                    `📝 Título: ${ticketTitle}`
+                );
+            }
+
+            if (isReport) {
+
+                console.log(
+                    '📊 Arquivo identificado como relatório.'
+                );
+            }
 
             const accessToken =
                 await getAccessToken();
@@ -814,8 +885,10 @@ app.post(
                             'Content-Type':
                                 'application/pdf'
                         },
+
                         maxBodyLength:
                             Infinity,
+
                         maxContentLength:
                             Infinity
                     }
@@ -827,13 +900,17 @@ app.post(
 
             return res.json({
                 success: true,
+
                 message:
                     'PDF enviado com sucesso.',
+
                 file: {
                     id:
                         response.data.id,
+
                     name:
                         response.data.name,
+
                     webUrl:
                         response.data.webUrl
                 }
@@ -860,9 +937,18 @@ app.post(
     }
 );
 
-
 // ============================================================
-// UPLOAD LIST DATA
+// UPLOAD DOS DADOS PARA A LISTA
+// ============================================================
+//
+// OBSERVAÇÃO:
+//
+// Os nomes internos das colunas de uma lista SharePoint podem
+// ser diferentes dos nomes exibidos na tela.
+//
+// Se sua API anterior já possuía o mapeamento correto das
+// colunas, preserve os nomes internos que já funcionavam.
+//
 // ============================================================
 
 app.post(
@@ -912,6 +998,14 @@ app.post(
                 const row
                 of listData
             ) {
+
+                /*
+                 * ATENÇÃO:
+                 *
+                 * Se esses nomes internos forem diferentes
+                 * na sua lista atual, mantenha os nomes que
+                 * seu server.js antigo já utilizava.
+                 */
 
                 const fields = {
                     Title:
@@ -1011,6 +1105,7 @@ app.post(
                         headers: {
                             Authorization:
                                 `Bearer ${accessToken}`,
+
                             'Content-Type':
                                 'application/json'
                         }
@@ -1051,7 +1146,6 @@ app.post(
     }
 );
 
-
 // ============================================================
 // EXCLUI TODOS OS PDFs DE UM TICKET
 // ============================================================
@@ -1066,6 +1160,17 @@ app.delete(
                 normalizeTicket(
                     req.params.ticketNumber
                 );
+
+            if (!ticketNumber) {
+
+                return res
+                    .status(400)
+                    .json({
+                        success: false,
+                        error:
+                            'Número do ticket não informado.'
+                    });
+            }
 
             const accessToken =
                 await getAccessToken();
@@ -1153,25 +1258,26 @@ app.delete(
     }
 );
 
-
 // ============================================================
 // LIMPEZA DE PDFs DUPLICADOS
 // ============================================================
 //
-// IMPORTANTE:
-//
-// Mantém somente UM PDF por ticket.
-//
-// Exemplo:
+// EXEMPLO:
 //
 // Laudo - SR-7382-17913948365.pdf
 // Laudo - SR-7382-179134602920.pdf
 //
-// Ambos são identificados como:
-//
+// Os dois são:
 // SR-7382
 //
-// O arquivo mais recentemente modificado no SharePoint é mantido.
+// A rotina:
+//
+// 1. Agrupa por ticket.
+// 2. Ordena por lastModifiedDateTime.
+// 3. Mantém o mais recente.
+// 4. Exclui os PDFs mais antigos.
+//
+// NÃO APAGA ITENS DA LISTA SHAREPOINT.
 //
 // ============================================================
 
@@ -1212,22 +1318,22 @@ app.post(
             const ticketGroups =
                 new Map();
 
+            // ------------------------------------------------
+            // AGRUPAMENTO
+            // ------------------------------------------------
+
             for (
                 const file
                 of files
             ) {
 
-                /*
-                 * Ignora pastas
-                 */
+                // Ignora pastas.
 
                 if (!file.file) {
                     continue;
                 }
 
-                /*
-                 * Ignora arquivos não PDF
-                 */
+                // Ignora arquivos que não são PDF.
 
                 if (
                     !file.name ||
@@ -1235,12 +1341,9 @@ app.post(
                         .toLowerCase()
                         .endsWith('.pdf')
                 ) {
+
                     continue;
                 }
-
-                /*
-                 * Identifica ticket
-                 */
 
                 const ticketNumber =
                     extractTicketNumber(
@@ -1248,14 +1351,14 @@ app.post(
                     );
 
                 /*
-                 * Não reconheceu como laudo.
-                 * Não mexe no arquivo.
+                 * Se não reconheceu o padrão do laudo,
+                 * não mexe no arquivo.
                  */
 
                 if (!ticketNumber) {
 
                     console.log(
-                        `ℹ️ Ignorado: ${file.name}`
+                        `ℹ️ Arquivo ignorado: ${file.name}`
                     );
 
                     continue;
@@ -1278,14 +1381,13 @@ app.post(
                     .push(file);
             }
 
-
             const duplicates = [];
             const deletedFiles = [];
             const keptFiles = [];
 
-            /*
-             * Percorre cada ticket
-             */
+            // ------------------------------------------------
+            // PROCESSAMENTO POR TICKET
+            // ------------------------------------------------
 
             for (
                 const [
@@ -1295,26 +1397,22 @@ app.post(
                 of ticketGroups.entries()
             ) {
 
-                /*
-                 * Apenas um PDF.
-                 * Não existe duplicidade.
-                 */
+                // Um único PDF: não há duplicidade.
 
                 if (
                     ticketFiles.length <= 1
                 ) {
+
                     continue;
                 }
 
                 console.log(
-                    `⚠️ ${ticketNumber}: ` +
+                    `⚠️ Ticket ${ticketNumber}: ` +
                     `${ticketFiles.length} PDFs encontrados.`
                 );
 
                 /*
-                 * Ordena pelo lastModifiedDateTime.
-                 *
-                 * Mais recente fica na posição 0.
+                 * Mais recentemente modificado primeiro.
                  */
 
                 ticketFiles.sort(
@@ -1341,40 +1439,36 @@ app.post(
                     }
                 );
 
-                /*
-                 * Mantém o mais recente
-                 */
-
                 const keepFile =
                     ticketFiles[0];
-
-                /*
-                 * Todos os outros
-                 * são duplicados
-                 */
 
                 const filesToDelete =
                     ticketFiles.slice(1);
 
                 console.log(
-                    `✅ ${ticketNumber}: ` +
+                    `✅ Ticket ${ticketNumber}: ` +
                     `mantendo "${keepFile.name}"`
                 );
 
                 keptFiles.push({
                     ticketNumber,
+
                     fileName:
                         keepFile.name,
+
                     modified:
                         keepFile.lastModifiedDateTime
                 });
 
                 duplicates.push({
                     ticketNumber,
+
                     total:
                         ticketFiles.length,
+
                     keep:
                         keepFile.name,
+
                     delete:
                         filesToDelete.map(
                             file =>
@@ -1382,10 +1476,9 @@ app.post(
                         )
                 });
 
-
-                /*
-                 * Exclui PDFs antigos
-                 */
+                // --------------------------------------------
+                // EXCLUSÃO DOS ANTIGOS
+                // --------------------------------------------
 
                 for (
                     const file
@@ -1408,27 +1501,26 @@ app.post(
                     );
 
                     console.log(
-                        `🗑️ Excluído: ${file.name}`
+                        `🗑️ Duplicado excluído: ${file.name}`
                     );
 
                     deletedFiles.push({
                         ticketNumber,
+
                         fileName:
                             file.name
                     });
                 }
             }
 
-
             console.log(
-                '✅ Limpeza concluída.'
+                '✅ Limpeza de PDFs concluída.'
             );
 
             console.log(
                 `🗑️ ${deletedFiles.length} ` +
                 `PDF(s) duplicado(s) removido(s).`
             );
-
 
             return res.json({
 
@@ -1478,14 +1570,18 @@ app.post(
     }
 );
 
-
 // ============================================================
-// LIMPAR LISTA SHAREPOINT
+// LIMPAR TODA A LISTA SHAREPOINT
 // ============================================================
 //
 // ATENÇÃO:
-// Essa rota continua separada.
-// Ela NÃO é chamada pela limpeza de PDFs duplicados.
+//
+// Esta rota é separada.
+//
+// /cleanup-duplicate-pdfs
+// NÃO chama esta rota.
+//
+// Portanto, limpar PDFs duplicados NÃO limpa a lista.
 //
 // ============================================================
 
@@ -1513,14 +1609,20 @@ app.delete(
                     siteId
                 );
 
-            let url =
-                `https://graph.microsoft.com/v1.0/` +
-                `sites/${siteId}/lists/` +
-                `${listId}/items?$top=200`;
-
             let deleted = 0;
 
-            while (url) {
+            /*
+             * É melhor buscar novamente a primeira página
+             * depois das exclusões, pois os itens da coleção
+             * estão sendo modificados durante o processo.
+             */
+
+            while (true) {
+
+                const url =
+                    `https://graph.microsoft.com/v1.0/` +
+                    `sites/${siteId}/lists/` +
+                    `${listId}/items?$top=200`;
 
                 const response =
                     await axios.get(
@@ -1536,15 +1638,12 @@ app.delete(
                 const items =
                     response.data.value || [];
 
-                /*
-                 * Guarda nextLink ANTES
-                 * de começar a excluir.
-                 */
+                if (
+                    items.length === 0
+                ) {
 
-                const nextLink =
-                    response.data[
-                        '@odata.nextLink'
-                    ] || null;
+                    break;
+                }
 
                 for (
                     const item
@@ -1570,17 +1669,20 @@ app.delete(
                     deleted++;
                 }
 
-                url =
-                    nextLink;
+                console.log(
+                    `🗑️ ${deleted} registro(s) removido(s) até agora...`
+                );
             }
 
             console.log(
-                `✅ ${deleted} registro(s) removido(s).`
+                `✅ ${deleted} registro(s) removido(s) da lista.`
             );
 
             return res.json({
                 success: true,
+
                 deleted,
+
                 message:
                     `${deleted} registro(s) ` +
                     `foram removidos da lista.`
@@ -1607,9 +1709,8 @@ app.delete(
     }
 );
 
-
 // ============================================================
-// TRATAMENTO DE ROTA NÃO ENCONTRADA
+// ROTA NÃO ENCONTRADA
 // ============================================================
 
 app.use(
@@ -1617,13 +1718,13 @@ app.use(
 
         res.status(404).json({
             success: false,
+
             error:
                 `Rota não encontrada: ` +
                 `${req.method} ${req.originalUrl}`
         });
     }
 );
-
 
 // ============================================================
 // INICIA SERVIDOR
