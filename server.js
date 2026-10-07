@@ -3,85 +3,67 @@ import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
 
-// ============================================================
-// APLICAÇÃO
-// ============================================================
-
 const app = express();
-
-const PORT =
-    process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 // ============================================================
-// VARIÁVEIS DO RENDER
+// CONFIGURAÇÃO
 // ============================================================
 
-const TENANT_ID =
-    process.env.TENANT_ID;
-
-const CLIENT_ID =
-    process.env.CLIENT_ID;
-
-const CLIENT_SECRET =
-    process.env.CLIENT_SECRET;
-
-const SITE_ID =
-    process.env.SITE_ID;
-
-const LIBRARY_NAME =
-    process.env.LIBRARY_NAME;
-
-const LIST_NAME =
-    process.env.LIST_NAME;
-
-const FOLDER_PATH =
-    process.env.FOLDER_PATH || 'Laudos';
-
-// ============================================================
-// MIDDLEWARES
-// ============================================================
+const TENANT_ID = process.env.TENANT_ID;
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const SITE_ID = process.env.SITE_ID;
+const LIBRARY_NAME = process.env.LIBRARY_NAME;
+const LIST_NAME = process.env.LIST_NAME;
+const FOLDER_PATH = process.env.FOLDER_PATH || 'Laudos';
 
 app.use(cors());
-
-app.use(
-    express.json({
-        limit: '100mb'
-    })
-);
-
-app.use(
-    express.urlencoded({
-        extended: true,
-        limit: '100mb'
-    })
-);
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // ============================================================
 // CACHE
 // ============================================================
 
-let cachedAccessToken = null;
-let cachedAccessTokenExpiresAt = 0;
-
+let cachedToken = null;
+let cachedTokenExpiresAt = 0;
 let cachedDriveId = null;
 let cachedListId = null;
-let cachedListColumns = null;
+let cachedColumns = null;
 
 // ============================================================
-// INICIALIZAÇÃO
+// AUXILIARES
 // ============================================================
 
-console.log(
-    '🚀 API SharePoint Global Plastic iniciando...'
-);
+function getErrorMessage(error) {
+    return (
+        error?.response?.data?.error_description ||
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Erro desconhecido.'
+    );
+}
 
-// ============================================================
-// VALIDAÇÃO DAS VARIÁVEIS
-// ============================================================
+function normalizeText(value) {
+    return String(value ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+}
+
+function normalizeTicket(value) {
+    return String(value ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/^#/, '')
+        .replace(/[^A-Z0-9-]/g, '');
+}
 
 function validateEnvironment() {
-
-    const requiredVariables = [
+    const required = [
         'TENANT_ID',
         'CLIENT_ID',
         'CLIENT_SECRET',
@@ -90,641 +72,565 @@ function validateEnvironment() {
         'LIST_NAME'
     ];
 
-    const missing =
-        requiredVariables.filter(
-            variable =>
-                !process.env[variable]
+    const missing = required.filter(name => !process.env[name]);
+
+    if (missing.length) {
+        console.error(
+            `❌ Variáveis ausentes: ${missing.join(', ')}`
         );
-
-    if (missing.length > 0) {
-
-        console.warn(
-            '⚠️ Variáveis de ambiente não configuradas:',
-            missing.join(', ')
-        );
-
-        return;
+    } else {
+        console.log('✅ Variáveis de ambiente configuradas.');
     }
-
-    console.log(
-        '✅ Variáveis de ambiente principais configuradas.'
-    );
 }
 
 validateEnvironment();
 
 // ============================================================
-// TRATAMENTO DE ERROS
-// ============================================================
-
-function getErrorMessage(error) {
-
-    return (
-        error?.response?.data?.error_description ||
-        error?.response?.data?.error?.message ||
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        error?.message ||
-        'Erro desconhecido.'
-    );
-}
-
-// ============================================================
-// NORMALIZA TEXTO
-// ============================================================
-
-function normalizeText(value) {
-
-    if (
-        value === undefined ||
-        value === null
-    ) {
-
-        return '';
-    }
-
-    return String(value)
-        .normalize('NFD')
-        .replace(
-            /[\u0300-\u036f]/g,
-            ''
-        )
-        .trim()
-        .toLowerCase();
-}
-
-// ============================================================
-// NORMALIZA TICKET
-// ============================================================
-
-function normalizeTicket(ticket) {
-
-    if (!ticket) {
-
-        return '';
-    }
-
-    return String(ticket)
-        .trim()
-        .toUpperCase()
-        .replace(
-            /[^A-Z0-9-]/g,
-            ''
-        );
-}
-
-// ============================================================
-// AUTENTICAÇÃO MICROSOFT
+// MICROSOFT TOKEN
 // ============================================================
 
 async function getAccessToken() {
+    if (
+        cachedToken &&
+        Date.now() < cachedTokenExpiresAt
+    ) {
+        return cachedToken;
+    }
+
+    const url =
+        `https://login.microsoftonline.com/` +
+        `${TENANT_ID}/oauth2/v2.0/token`;
+
+    const body = new URLSearchParams();
+
+    body.append('client_id', CLIENT_ID);
+    body.append('client_secret', CLIENT_SECRET);
+    body.append(
+        'scope',
+        'https://graph.microsoft.com/.default'
+    );
+    body.append(
+        'grant_type',
+        'client_credentials'
+    );
 
     try {
-
-        // ----------------------------------------------------
-        // Reutiliza token ainda válido
-        // ----------------------------------------------------
-
-        if (
-            cachedAccessToken &&
-            Date.now() <
-                cachedAccessTokenExpiresAt
-        ) {
-
-            return cachedAccessToken;
-        }
-
-        if (!TENANT_ID) {
-
-            throw new Error(
-                'TENANT_ID não configurado.'
-            );
-        }
-
-        if (!CLIENT_ID) {
-
-            throw new Error(
-                'CLIENT_ID não configurado.'
-            );
-        }
-
-        if (!CLIENT_SECRET) {
-
-            throw new Error(
-                'CLIENT_SECRET não configurado.'
-            );
-        }
-
-        const tokenUrl =
-            `https://login.microsoftonline.com/` +
-            `${TENANT_ID}/oauth2/v2.0/token`;
-
-        const params =
-            new URLSearchParams();
-
-        params.append(
-            'client_id',
-            CLIENT_ID
-        );
-
-        params.append(
-            'client_secret',
-            CLIENT_SECRET
-        );
-
-        params.append(
-            'scope',
-            'https://graph.microsoft.com/.default'
-        );
-
-        params.append(
-            'grant_type',
-            'client_credentials'
-        );
-
-        const response =
-            await axios.post(
-                tokenUrl,
-                params.toString(),
-                {
-                    headers: {
-                        'Content-Type':
-                            'application/x-www-form-urlencoded'
-                    }
+        const response = await axios.post(
+            url,
+            body.toString(),
+            {
+                headers: {
+                    'Content-Type':
+                        'application/x-www-form-urlencoded'
                 }
-            );
-
-        if (
-            !response.data.access_token
-        ) {
-
-            throw new Error(
-                'Microsoft não retornou access_token.'
-            );
-        }
-
-        cachedAccessToken =
-            response.data.access_token;
-
-        const expiresIn =
-            Number(
-                response.data.expires_in || 3600
-            );
-
-        // Renova cinco minutos antes
-        // do vencimento real.
-
-        cachedAccessTokenExpiresAt =
-            Date.now() +
-            Math.max(
-                expiresIn - 300,
-                60
-            ) * 1000;
-
-        console.log(
-            '✅ Autenticação Microsoft realizada.'
+            }
         );
 
-        return cachedAccessToken;
+        cachedToken = response.data.access_token;
+
+        const expires =
+            Number(response.data.expires_in || 3600);
+
+        cachedTokenExpiresAt =
+            Date.now() +
+            Math.max(expires - 300, 60) * 1000;
+
+        return cachedToken;
 
     } catch (error) {
-
-        const message =
-            getErrorMessage(error);
-
-        console.error(
-            '❌ Erro de autenticação:',
-            message
-        );
-
         throw new Error(
-            `Erro na autenticação Microsoft: ${message}`
+            `Erro na autenticação Microsoft: ` +
+            getErrorMessage(error)
         );
     }
 }
 
 // ============================================================
-// SITE
+// DRIVE / BIBLIOTECA
 // ============================================================
 
-function getSiteId() {
-
-    if (!SITE_ID) {
-
-        throw new Error(
-            'Variável SITE_ID não configurada no Render.'
-        );
+async function getDriveId(token) {
+    if (cachedDriveId) {
+        return cachedDriveId;
     }
 
-    return SITE_ID;
-}
-
-// ============================================================
-// LOCALIZA BIBLIOTECA PELO LIBRARY_NAME
-// ============================================================
-
-async function getDriveId(
-    accessToken
-) {
+    const url =
+        `https://graph.microsoft.com/v1.0/` +
+        `sites/${SITE_ID}/drives`;
 
     try {
+        const response = await axios.get(url, {
+            headers: {
+                Authorization: `Bearer ${token}`
+            }
+        });
 
-        if (cachedDriveId) {
+        const drives = response.data.value || [];
 
-            return cachedDriveId;
-        }
-
-        if (!LIBRARY_NAME) {
-
-            throw new Error(
-                'Variável LIBRARY_NAME não configurada.'
-            );
-        }
-
-        const siteId =
-            getSiteId();
-
-        const url =
-            `https://graph.microsoft.com/v1.0/` +
-            `sites/${siteId}/drives`;
-
-        const response =
-            await axios.get(
-                url,
-                {
-                    headers: {
-                        Authorization:
-                            `Bearer ${accessToken}`
-                    }
-                }
-            );
-
-        const drives =
-            response.data.value || [];
-
-        const targetName =
-            normalizeText(
-                LIBRARY_NAME
-            );
-
-        const drive =
-            drives.find(
-                item =>
-                    normalizeText(
-                        item.name
-                    ) === targetName
-            );
+        const drive = drives.find(
+            d =>
+                normalizeText(d.name) ===
+                normalizeText(LIBRARY_NAME)
+        );
 
         if (!drive) {
-
-            const available =
-                drives
-                    .map(
-                        item =>
-                            item.name
-                    )
-                    .filter(Boolean)
-                    .join(', ');
-
             throw new Error(
                 `Biblioteca "${LIBRARY_NAME}" não encontrada. ` +
-                `Bibliotecas disponíveis: ${available}`
+                `Disponíveis: ` +
+                drives.map(d => d.name).join(', ')
             );
         }
 
-        cachedDriveId =
-            drive.id;
+        cachedDriveId = drive.id;
 
         console.log(
             `✅ Biblioteca localizada: ${drive.name}`
         );
 
-        console.log(
-            `📚 Drive ID localizado com sucesso.`
-        );
-
         return cachedDriveId;
 
     } catch (error) {
-
-        const message =
-            getErrorMessage(error);
-
-        console.error(
-            '❌ Erro ao localizar biblioteca:',
-            message
-        );
-
         throw new Error(
-            `Erro ao localizar biblioteca: ${message}`
+            `Erro ao localizar biblioteca: ` +
+            getErrorMessage(error)
         );
     }
 }
 
 // ============================================================
-// LOCALIZA LISTA PELO LIST_NAME
+// LISTA
 // ============================================================
 
-async function getListId(
-    accessToken
-) {
+async function getListId(token) {
+    if (cachedListId) {
+        return cachedListId;
+    }
+
+    let url =
+        `https://graph.microsoft.com/v1.0/` +
+        `sites/${SITE_ID}/lists` +
+        `?$select=id,name,displayName&$top=200`;
+
+    const lists = [];
 
     try {
-
-        if (cachedListId) {
-
-            return cachedListId;
-        }
-
-        if (!LIST_NAME) {
-
-            throw new Error(
-                'Variável LIST_NAME não configurada.'
-            );
-        }
-
-        const siteId =
-            getSiteId();
-
-        let url =
-            `https://graph.microsoft.com/v1.0/` +
-            `sites/${siteId}/lists` +
-            `?$select=id,name,displayName&$top=200`;
-
-        const lists = [];
-
         while (url) {
-
-            const response =
-                await axios.get(
-                    url,
-                    {
-                        headers: {
-                            Authorization:
-                                `Bearer ${accessToken}`
-                        }
-                    }
-                );
+            const response = await axios.get(url, {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            });
 
             lists.push(
                 ...(response.data.value || [])
             );
 
             url =
-                response.data[
-                    '@odata.nextLink'
-                ] || null;
+                response.data['@odata.nextLink'] ||
+                null;
         }
 
-        const targetName =
-            normalizeText(
-                LIST_NAME
-            );
-
-        const list =
-            lists.find(
-                item => {
-
-                    const displayName =
-                        normalizeText(
-                            item.displayName
-                        );
-
-                    const name =
-                        normalizeText(
-                            item.name
-                        );
-
-                    return (
-                        displayName ===
-                            targetName ||
-                        name ===
-                            targetName
-                    );
-                }
-            );
+        const list = lists.find(
+            l =>
+                normalizeText(l.displayName) ===
+                    normalizeText(LIST_NAME) ||
+                normalizeText(l.name) ===
+                    normalizeText(LIST_NAME)
+        );
 
         if (!list) {
-
-            const available =
-                lists
-                    .map(
-                        item =>
-                            item.displayName ||
-                            item.name
-                    )
-                    .filter(Boolean)
-                    .join(', ');
-
             throw new Error(
                 `Lista "${LIST_NAME}" não encontrada. ` +
-                `Listas disponíveis: ${available}`
+                `Disponíveis: ` +
+                lists
+                    .map(
+                        l =>
+                            l.displayName ||
+                            l.name
+                    )
+                    .join(', ')
             );
         }
 
-        cachedListId =
-            list.id;
+        cachedListId = list.id;
 
         console.log(
             `✅ Lista localizada: ` +
             `${list.displayName || list.name}`
         );
 
-        console.log(
-            '📋 List ID localizado com sucesso.'
-        );
-
         return cachedListId;
 
     } catch (error) {
-
-        const message =
-            getErrorMessage(error);
-
-        console.error(
-            '❌ Erro ao localizar lista:',
-            message
-        );
-
         throw new Error(
-            `Erro ao localizar lista: ${message}`
+            `Erro ao localizar lista: ` +
+            getErrorMessage(error)
         );
     }
 }
 
 // ============================================================
-// COLUNAS DA LISTA
+// COLUNAS REAIS DA LISTA
 // ============================================================
 
-async function getListColumns(
-    accessToken,
-    listId
-) {
-
-    try {
-
-        if (cachedListColumns) {
-
-            return cachedListColumns;
-        }
-
-        const siteId =
-            getSiteId();
-
-        let url =
-            `https://graph.microsoft.com/v1.0/` +
-            `sites/${siteId}/lists/` +
-            `${listId}/columns` +
-            `?$select=id,name,displayName,hidden,readOnly&$top=200`;
-
-        const columns = [];
-
-        while (url) {
-
-            const response =
-                await axios.get(
-                    url,
-                    {
-                        headers: {
-                            Authorization:
-                                `Bearer ${accessToken}`
-                        }
-                    }
-                );
-
-            columns.push(
-                ...(response.data.value || [])
-            );
-
-            url =
-                response.data[
-                    '@odata.nextLink'
-                ] || null;
-        }
-
-        cachedListColumns =
-            columns;
-
-        console.log(
-            `✅ ${columns.length} coluna(s) da lista carregada(s).`
-        );
-
-        return columns;
-
-    } catch (error) {
-
-        const message =
-            getErrorMessage(error);
-
-        throw new Error(
-            `Erro ao consultar colunas da lista: ${message}`
-        );
+async function getListColumns(token, listId) {
+    if (cachedColumns) {
+        return cachedColumns;
     }
-}
 
-// ============================================================
-// LOCALIZA UMA COLUNA
-// ============================================================
+    let url =
+        `https://graph.microsoft.com/v1.0/` +
+        `sites/${SITE_ID}/lists/${listId}/columns` +
+        `?$top=200`;
 
-function findColumn(
-    columns,
-    aliases
-) {
+    const columns = [];
 
-    const normalizedAliases =
-        aliases.map(
-            alias =>
-                normalizeText(alias)
-        );
-
-    return columns.find(
-        column => {
-
-            if (column.readOnly) {
-
-                return false;
+    while (url) {
+        const response = await axios.get(url, {
+            headers: {
+                Authorization: `Bearer ${token}`
             }
+        });
 
-            const displayName =
-                normalizeText(
-                    column.displayName
-                );
+        columns.push(
+            ...(response.data.value || [])
+        );
 
-            const internalName =
-                normalizeText(
-                    column.name
-                );
+        url =
+            response.data['@odata.nextLink'] ||
+            null;
+    }
 
-            return (
-                normalizedAliases.includes(
-                    displayName
-                ) ||
-                normalizedAliases.includes(
-                    internalName
-                )
-            );
-        }
+    cachedColumns = columns;
+
+    console.log(
+        `✅ ${columns.length} colunas encontradas na lista.`
     );
+
+    return columns;
+}
+
+function findColumn(columns, aliases) {
+    const normalized =
+        aliases.map(normalizeText);
+
+    return columns.find(column => {
+        const name =
+            normalizeText(column.name);
+
+        const display =
+            normalizeText(column.displayName);
+
+        return (
+            normalized.includes(name) ||
+            normalized.includes(display)
+        );
+    });
 }
 
 // ============================================================
-// ATRIBUI CAMPO SE A COLUNA EXISTIR
+// CONVERSÃO DE DATA PT-BR -> ISO
 // ============================================================
 
-function setSharePointField(
+function convertBrazilianDateToIso(value) {
+    if (!value) {
+        return null;
+    }
+
+    const text = String(value).trim();
+
+    // Já é uma data válida/ISO?
+    const directDate = new Date(text);
+
+    if (
+        !Number.isNaN(directDate.getTime()) &&
+        /^\d{4}-\d{2}-\d{2}/.test(text)
+    ) {
+        return directDate.toISOString();
+    }
+
+    // Ex:
+    // 07/10/2026 16:02:00
+    const match = text.match(
+        /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:,\s*|\s+)?(\d{1,2})?:?(\d{2})?:?(\d{2})?$/
+    );
+
+    if (!match) {
+        return null;
+    }
+
+    const day = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const year = Number(match[3]);
+    const hour = Number(match[4] || 0);
+    const minute = Number(match[5] || 0);
+    const second = Number(match[6] || 0);
+
+    const date = new Date(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second
+    );
+
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    return date.toISOString();
+}
+
+// ============================================================
+// VALOR COMPATÍVEL COM O TIPO DA COLUNA
+// ============================================================
+
+function convertValueForColumn(column, value) {
+    if (
+        value === undefined ||
+        value === null ||
+        value === ''
+    ) {
+        return null;
+    }
+
+    if (column.number) {
+        const number = Number(
+            String(value)
+                .replace(/\./g, '')
+                .replace(',', '.')
+        );
+
+        return Number.isNaN(number)
+            ? null
+            : number;
+    }
+
+    if (column.boolean) {
+        return Boolean(value);
+    }
+
+    if (column.dateTime) {
+        return convertBrazilianDateToIso(value);
+    }
+
+    // URL/Hyperlink no Graph é enviada como texto URL.
+    if (column.hyperlinkOrPicture) {
+        return String(value);
+    }
+
+    if (column.choice) {
+        return String(value);
+    }
+
+    if (column.text) {
+        return String(value);
+    }
+
+    return String(value);
+}
+
+function addField(
     fields,
     columns,
     aliases,
-    value,
-    allowEmpty = false
+    value
 ) {
-
     if (
-        !allowEmpty &&
-        (
-            value === undefined ||
-            value === null ||
-            String(value).trim() === ''
-        )
+        value === undefined ||
+        value === null ||
+        value === ''
     ) {
-
-        return false;
+        return;
     }
 
     const column =
-        findColumn(
-            columns,
-            aliases
-        );
+        findColumn(columns, aliases);
 
     if (!column) {
+        console.warn(
+            `⚠️ Coluna não encontrada: ` +
+            aliases[0]
+        );
 
-        return false;
+        return;
+    }
+
+    if (column.readOnly) {
+        console.warn(
+            `⚠️ Coluna somente leitura ignorada: ` +
+            `${column.displayName}`
+        );
+
+        return;
+    }
+
+    const converted =
+        convertValueForColumn(
+            column,
+            value
+        );
+
+    if (
+        converted === null ||
+        converted === undefined
+    ) {
+        console.warn(
+            `⚠️ Valor inválido ignorado. ` +
+            `Coluna: ${column.displayName} | ` +
+            `Valor: ${value}`
+        );
+
+        return;
     }
 
     fields[column.name] =
-        value;
-
-    return true;
+        converted;
 }
 
 // ============================================================
-// CAMINHO DA PASTA
+// MONTA CAMPOS DA LISTA
+// ============================================================
+
+function buildListFields(
+    row,
+    ticketNumber,
+    columns
+) {
+    const fields = {};
+
+    const ticket =
+        normalizeTicket(
+            row['N° do ticket'] ||
+            ticketNumber
+        );
+
+    const title =
+        `${ticket} - ` +
+        `${row.Item || ''} - ` +
+        `${row.Motivo || ''}`;
+
+    addField(
+        fields,
+        columns,
+        ['Title', 'Título', 'Titulo'],
+        title.substring(0, 255)
+    );
+
+    addField(
+        fields,
+        columns,
+        [
+            'N_x00b0_doticket',
+            'N° do ticket',
+            'Nº do ticket',
+            'Número do ticket',
+            'Numero do ticket'
+        ],
+        ticket
+    );
+
+    addField(
+        fields,
+        columns,
+        [
+            'NomedoCliente',
+            'Nome do Cliente'
+        ],
+        row['Nome do Cliente']
+    );
+
+    addField(
+        fields,
+        columns,
+        ['Item'],
+        row.Item
+    );
+
+    addField(
+        fields,
+        columns,
+        ['Qtde', 'Quantidade'],
+        row.Qtde
+    );
+
+    addField(
+        fields,
+        columns,
+        ['Motivo'],
+        row.Motivo
+    );
+
+    addField(
+        fields,
+        columns,
+        [
+            'Origemdodefeito',
+            'Origem do defeito'
+        ],
+        row['Origem do defeito']
+    );
+
+    addField(
+        fields,
+        columns,
+        [
+            'Disposi_x00e7__x00e3_o',
+            'Disposição',
+            'Disposicao'
+        ],
+        row['Disposição']
+    );
+
+    addField(
+        fields,
+        columns,
+        [
+            'Disposi_x00e7__x00e3_odaspe_x00e',
+            'Disposição das peças',
+            'Disposicao das pecas'
+        ],
+        row['Disposição das peças']
+    );
+
+    addField(
+        fields,
+        columns,
+        [
+            'DatadeGera_x00e7__x00e3_o',
+            'Data de Geração',
+            'Data de Geracao'
+        ],
+        row['Data de Geração']
+    );
+
+    for (let i = 1; i <= 10; i++) {
+        addField(
+            fields,
+            columns,
+            [
+                `Foto${i}`,
+                `Foto ${i}`
+            ],
+            row[`Foto ${i}`]
+        );
+    }
+
+    return fields;
+}
+
+// ============================================================
+// CAMINHO SHAREPOINT
 // ============================================================
 
 function getEncodedFolderPath() {
-
-    return String(
-        FOLDER_PATH || ''
-    )
+    return String(FOLDER_PATH || '')
         .replace(/^\/+/, '')
         .replace(/\/+$/, '')
         .split('/')
         .filter(Boolean)
-        .map(
-            part =>
-                encodeURIComponent(part)
-        )
+        .map(encodeURIComponent)
         .join('/');
 }
 
@@ -733,743 +639,210 @@ function getEncodedFolderPath() {
 // ============================================================
 
 async function getAllFilesFromFolder(
-    accessToken,
+    token,
     driveId
 ) {
-
     const files = [];
 
-    const encodedFolder =
+    const folder =
         getEncodedFolderPath();
 
     let url;
 
-    if (encodedFolder) {
-
+    if (folder) {
         url =
             `https://graph.microsoft.com/v1.0/` +
             `drives/${driveId}/root:/` +
-            `${encodedFolder}:/children` +
-            `?$top=200&` +
-            `$select=id,name,file,folder,size,` +
-            `createdDateTime,lastModifiedDateTime,webUrl`;
-
+            `${folder}:/children` +
+            `?$top=200`;
     } else {
-
         url =
             `https://graph.microsoft.com/v1.0/` +
             `drives/${driveId}/root/children` +
-            `?$top=200&` +
-            `$select=id,name,file,folder,size,` +
-            `createdDateTime,lastModifiedDateTime,webUrl`;
+            `?$top=200`;
     }
 
     while (url) {
-
-        const response =
-            await axios.get(
-                url,
-                {
-                    headers: {
-                        Authorization:
-                            `Bearer ${accessToken}`
-                    }
-                }
-            );
+        const response = await axios.get(url, {
+            headers: {
+                Authorization: `Bearer ${token}`
+            }
+        });
 
         files.push(
             ...(response.data.value || [])
         );
 
         url =
-            response.data[
-                '@odata.nextLink'
-            ] || null;
+            response.data['@odata.nextLink'] ||
+            null;
     }
 
     return files;
 }
 
 // ============================================================
-// EXTRAI TICKET DO NOME DO PDF
-// ============================================================
-//
-// Exemplos:
-//
-// Laudo - SR-7382-17913948365.pdf
-// Laudo - SR-7382-20261007 1426.pdf
-// Laudo - SR-7382.pdf
-//
-// Retorna:
-//
-// SR-7382
-//
+// TICKET PELO NOME DO PDF
 // ============================================================
 
-function extractTicketNumber(
-    fileName
-) {
-
+function extractTicketNumber(fileName) {
     if (!fileName) {
-
         return null;
     }
 
     const name =
         String(fileName).trim();
 
-    if (
-        !name
-            .toLowerCase()
-            .endsWith('.pdf')
-    ) {
-
-        return null;
-    }
-
-    // SR-1234
-
-    let match =
-        name.match(
-            /^Laudo\s*-\s*(SR-\d+)(?:-.+)?\.pdf$/i
-        );
+    let match = name.match(
+        /^Laudo\s*-\s*([A-Za-z]+-\d+)(?:-.+)?\.pdf$/i
+    );
 
     if (match) {
-
-        return normalizeTicket(
-            match[1]
-        );
+        return normalizeTicket(match[1]);
     }
 
-    // Outros prefixos:
-    // OS-123, TK-123 etc.
-
-    match =
-        name.match(
-            /^Laudo\s*-\s*([A-Za-z]+-\d+)(?:-.+)?\.pdf$/i
-        );
+    match = name.match(
+        /^Laudo\s*-\s*(\d+)(?:-.+)?\.pdf$/i
+    );
 
     if (match) {
-
-        return normalizeTicket(
-            match[1]
-        );
-    }
-
-    // Ticket apenas numérico
-
-    match =
-        name.match(
-            /^Laudo\s*-\s*(\d+)(?:-.+)?\.pdf$/i
-        );
-
-    if (match) {
-
-        return normalizeTicket(
-            match[1]
-        );
+        return normalizeTicket(match[1]);
     }
 
     return null;
 }
 
 // ============================================================
-// VERIFICA PDF
+// PDF EXISTE?
 // ============================================================
 
 async function ticketPdfExists(
-    accessToken,
+    token,
     driveId,
     ticketNumber
 ) {
-
-    const targetTicket =
-        normalizeTicket(
-            ticketNumber
-        );
+    const target =
+        normalizeTicket(ticketNumber);
 
     const files =
         await getAllFilesFromFolder(
-            accessToken,
+            token,
             driveId
         );
 
     return files.some(
-        file => {
-
-            if (!file.file) {
-
-                return false;
-            }
-
-            const fileTicket =
-                extractTicketNumber(
-                    file.name
-                );
-
-            return (
-                fileTicket ===
-                targetTicket
-            );
-        }
+        file =>
+            file.file &&
+            extractTicketNumber(file.name) ===
+                target
     );
 }
 
 // ============================================================
-// LOCALIZA COLUNA DO TICKET
-// ============================================================
-
-function getTicketColumn(
-    columns
-) {
-
-    return findColumn(
-        columns,
-        [
-            'N° do ticket',
-            'Nº do ticket',
-            'Número do ticket',
-            'Numero do ticket',
-            'N_x00b0_doticket',
-            'N_x00b0__x0020_do_x0020_ticket',
-            'N_x00b0_do_x0020_ticket',
-            'NumeroTicket',
-            'Ticket',
-            'Title'
-        ]
-    );
-}
-
-// ============================================================
-// TICKET DE UM ITEM DA LISTA
-// ============================================================
-
-function getTicketFromListFields(
-    fields,
-    ticketColumn
-) {
-
-    if (!fields) {
-
-        return '';
-    }
-
-    if (
-        ticketColumn &&
-        fields[ticketColumn.name] !==
-            undefined
-    ) {
-
-        return normalizeTicket(
-            fields[ticketColumn.name]
-        );
-    }
-
-    const fallbackNames = [
-        'N_x00b0_doticket',
-        'N_x00b0__x0020_do_x0020_ticket',
-        'N_x00b0_do_x0020_ticket',
-        'NumeroTicket',
-        'Ticket',
-        'Title'
-    ];
-
-    for (
-        const fieldName
-        of fallbackNames
-    ) {
-
-        if (
-            fields[fieldName] !==
-                undefined &&
-            fields[fieldName] !==
-                null
-        ) {
-
-            const value =
-                normalizeTicket(
-                    fields[fieldName]
-                );
-
-            if (value) {
-
-                return value;
-            }
-        }
-    }
-
-    return '';
-}
-
-// ============================================================
-// VERIFICA TICKET NA LISTA
+// TICKET EXISTE NA LISTA?
 // ============================================================
 
 async function ticketExistsInList(
-    accessToken,
+    token,
     listId,
     columns,
     ticketNumber
 ) {
-
-    const siteId =
-        getSiteId();
-
-    const targetTicket =
-        normalizeTicket(
-            ticketNumber
-        );
+    const target =
+        normalizeTicket(ticketNumber);
 
     const ticketColumn =
-        getTicketColumn(
-            columns
+        findColumn(
+            columns,
+            [
+                'N_x00b0_doticket',
+                'N° do ticket',
+                'Nº do ticket',
+                'Número do ticket',
+                'Numero do ticket'
+            ]
         );
+
+    if (!ticketColumn) {
+        throw new Error(
+            'Coluna do número do ticket não encontrada na lista.'
+        );
+    }
 
     let url =
         `https://graph.microsoft.com/v1.0/` +
-        `sites/${siteId}/lists/` +
+        `sites/${SITE_ID}/lists/` +
         `${listId}/items` +
         `?$expand=fields&$top=200`;
 
     while (url) {
-
         const response =
-            await axios.get(
-                url,
-                {
-                    headers: {
-                        Authorization:
-                            `Bearer ${accessToken}`
-                    }
+            await axios.get(url, {
+                headers: {
+                    Authorization: `Bearer ${token}`
                 }
-            );
-
-        const items =
-            response.data.value || [];
+            });
 
         const found =
-            items.some(
-                item =>
-                    getTicketFromListFields(
-                        item.fields,
-                        ticketColumn
-                    ) ===
-                    targetTicket
-            );
+            (response.data.value || [])
+                .some(item => {
+                    const value =
+                        item.fields?.[
+                            ticketColumn.name
+                        ];
+
+                    return (
+                        normalizeTicket(value) ===
+                        target
+                    );
+                });
 
         if (found) {
-
             return true;
         }
 
         url =
-            response.data[
-                '@odata.nextLink'
-            ] || null;
+            response.data['@odata.nextLink'] ||
+            null;
     }
 
     return false;
 }
 
 // ============================================================
-// BUSCA VALOR EM OBJETO
+// HEALTH
 // ============================================================
 
-function getRowValue(
-    row,
-    possibleNames
-) {
+app.get('/', (req, res) => {
+    res.json({
+        status: 'online',
+        timestamp:
+            new Date().toISOString(),
 
-    for (
-        const name
-        of possibleNames
-    ) {
+        configuration: {
+            tenantConfigured:
+                Boolean(TENANT_ID),
 
-        if (
-            row[name] !== undefined &&
-            row[name] !== null
-        ) {
+            clientConfigured:
+                Boolean(CLIENT_ID),
 
-            return row[name];
+            secretConfigured:
+                Boolean(CLIENT_SECRET),
+
+            siteConfigured:
+                Boolean(SITE_ID),
+
+            listName:
+                LIST_NAME,
+
+            libraryName:
+                LIBRARY_NAME,
+
+            folderPath:
+                FOLDER_PATH
         }
-    }
-
-    return '';
-}
-
-// ============================================================
-// MONTA CAMPOS DA LISTA
-// ============================================================
-
-function buildSharePointFields(
-    row,
-    ticketNumber,
-    columns
-) {
-
-    const fields = {};
-
-    // --------------------------------------------------------
-    // TICKET
-    // --------------------------------------------------------
-
-    const ticket =
-        getRowValue(
-            row,
-            [
-                'N° do ticket',
-                'Nº do ticket',
-                'Número do ticket',
-                'Numero do ticket',
-                'NumeroTicket',
-                'Ticket',
-                'ticketNumber'
-            ]
-        ) ||
-        ticketNumber ||
-        '';
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'N° do ticket',
-            'Nº do ticket',
-            'Número do ticket',
-            'Numero do ticket',
-            'N_x00b0_doticket',
-            'N_x00b0__x0020_do_x0020_ticket',
-            'N_x00b0_do_x0020_ticket',
-            'NumeroTicket',
-            'Ticket'
-        ],
-        String(ticket)
-    );
-
-    // --------------------------------------------------------
-    // TITLE
-    // --------------------------------------------------------
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Title',
-            'Título',
-            'Titulo'
-        ],
-        String(ticket)
-    );
-
-    // --------------------------------------------------------
-    // CLIENTE
-    // --------------------------------------------------------
-
-    const cliente =
-        getRowValue(
-            row,
-            [
-                'Nome do Cliente',
-                'Nome do cliente',
-                'NomeCliente',
-                'Cliente'
-            ]
-        );
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Nome do Cliente',
-            'Nome do cliente',
-            'NomedoCliente',
-            'NomeCliente',
-            'Cliente'
-        ],
-        cliente
-    );
-
-    // --------------------------------------------------------
-    // ITEM
-    // --------------------------------------------------------
-
-    const item =
-        getRowValue(
-            row,
-            [
-                'Item',
-                'item'
-            ]
-        );
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Item'
-        ],
-        item
-    );
-
-    // --------------------------------------------------------
-    // QUANTIDADE
-    // --------------------------------------------------------
-
-    const quantidadeRaw =
-        getRowValue(
-            row,
-            [
-                'Qtde',
-                'Quantidade',
-                'quantidade'
-            ]
-        );
-
-    if (
-        quantidadeRaw !== '' &&
-        quantidadeRaw !== undefined &&
-        quantidadeRaw !== null
-    ) {
-
-        const quantidade =
-            Number(
-                String(
-                    quantidadeRaw
-                )
-                    .replace(
-                        ',',
-                        '.'
-                    )
-            );
-
-        setSharePointField(
-            fields,
-            columns,
-            [
-                'Qtde',
-                'Quantidade'
-            ],
-            Number.isNaN(
-                quantidade
-            )
-                ? quantidadeRaw
-                : quantidade,
-            true
-        );
-    }
-
-    // --------------------------------------------------------
-    // MOTIVO
-    // --------------------------------------------------------
-
-    let motivo =
-        getRowValue(
-            row,
-            [
-                'Motivo',
-                'motivo'
-            ]
-        );
-
-    if (
-        Array.isArray(
-            motivo
-        )
-    ) {
-
-        motivo =
-            motivo.join(', ');
-    }
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Motivo'
-        ],
-        motivo
-    );
-
-    // --------------------------------------------------------
-    // ORIGEM DO DEFEITO
-    // --------------------------------------------------------
-
-    const origemDefeito =
-        getRowValue(
-            row,
-            [
-                'Origem do defeito',
-                'Origem do Defeito',
-                'OrigemDefeito'
-            ]
-        );
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Origem do defeito',
-            'Origem do Defeito',
-            'Origemdodefeito',
-            'OrigemDefeito'
-        ],
-        origemDefeito
-    );
-
-    // --------------------------------------------------------
-    // DISPOSIÇÃO
-    // --------------------------------------------------------
-
-    const disposicao =
-        getRowValue(
-            row,
-            [
-                'Disposição',
-                'Disposicao'
-            ]
-        );
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Disposição',
-            'Disposicao',
-            'Disposi_x00e7__x00e3_o'
-        ],
-        disposicao
-    );
-
-    // --------------------------------------------------------
-    // DISPOSIÇÃO DAS PEÇAS
-    // --------------------------------------------------------
-
-    const disposicaoPecas =
-        getRowValue(
-            row,
-            [
-                'Disposição das peças',
-                'Disposição das Peças',
-                'Disposicao das pecas',
-                'DisposicaoPecas'
-            ]
-        );
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Disposição das peças',
-            'Disposição das Peças',
-            'Disposicao das pecas',
-            'DisposicaoPecas',
-            'Disposi_x00e7__x00e3_odaspe_x00e'
-        ],
-        disposicaoPecas
-    );
-
-    // --------------------------------------------------------
-    // DATA DE GERAÇÃO
-    // --------------------------------------------------------
-
-    const dataGeracao =
-        getRowValue(
-            row,
-            [
-                'Data de Geração',
-                'Data de geração',
-                'Data de Geracao',
-                'DataGeracao'
-            ]
-        );
-
-    setSharePointField(
-        fields,
-        columns,
-        [
-            'Data de Geração',
-            'Data de geração',
-            'Data de Geracao',
-            'DataGeracao',
-            'DatadeGera_x00e7__x00e3_o'
-        ],
-        dataGeracao
-    );
-
-    // --------------------------------------------------------
-    // FOTOS 1 A 10
-    // --------------------------------------------------------
-
-    for (
-        let i = 1;
-        i <= 10;
-        i++
-    ) {
-
-        const foto =
-            getRowValue(
-                row,
-                [
-                    `Foto${i}`,
-                    `Foto ${i}`,
-                    `foto${i}`
-                ]
-            );
-
-        setSharePointField(
-            fields,
-            columns,
-            [
-                `Foto${i}`,
-                `Foto ${i}`
-            ],
-            foto
-        );
-    }
-
-    return fields;
-}
-
-// ============================================================
-// HEALTH CHECK
-// ============================================================
-
-app.get(
-    '/',
-    (req, res) => {
-
-        res.json({
-            status: 'online',
-
-            timestamp:
-                new Date()
-                    .toISOString(),
-
-            configuration: {
-                tenantConfigured:
-                    Boolean(TENANT_ID),
-
-                clientConfigured:
-                    Boolean(CLIENT_ID),
-
-                secretConfigured:
-                    Boolean(CLIENT_SECRET),
-
-                siteConfigured:
-                    Boolean(SITE_ID),
-
-                listName:
-                    LIST_NAME || null,
-
-                libraryName:
-                    LIBRARY_NAME || null,
-
-                folderPath:
-                    FOLDER_PATH
-            }
-        });
-    }
-);
+    });
+});
 
 // ============================================================
 // CHECK STATUS
@@ -1478,30 +851,13 @@ app.get(
 app.get(
     '/check-status/:ticketNumber',
     async (req, res) => {
-
         try {
-
-            const ticketNumber =
+            const ticket =
                 normalizeTicket(
                     req.params.ticketNumber
                 );
 
-            if (!ticketNumber) {
-
-                return res
-                    .status(400)
-                    .json({
-                        success: false,
-                        error:
-                            'Número do ticket não informado.'
-                    });
-            }
-
-            console.log(
-                `🔎 Verificando ${ticketNumber}...`
-            );
-
-            const accessToken =
+            const token =
                 await getAccessToken();
 
             const [
@@ -1509,17 +865,13 @@ app.get(
                 listId
             ] =
                 await Promise.all([
-                    getDriveId(
-                        accessToken
-                    ),
-                    getListId(
-                        accessToken
-                    )
+                    getDriveId(token),
+                    getListId(token)
                 ]);
 
             const columns =
                 await getListColumns(
-                    accessToken,
+                    token,
                     listId
                 );
 
@@ -1529,160 +881,114 @@ app.get(
             ] =
                 await Promise.all([
                     ticketPdfExists(
-                        accessToken,
+                        token,
                         driveId,
-                        ticketNumber
+                        ticket
                     ),
 
                     ticketExistsInList(
-                        accessToken,
+                        token,
                         listId,
                         columns,
-                        ticketNumber
+                        ticket
                     )
                 ]);
 
-            console.log(
-                `🔎 ${ticketNumber} | ` +
-                `PDF: ${existsInPdf} | ` +
-                `Lista: ${existsInList}`
-            );
-
             return res.json({
                 success: true,
-                ticketNumber,
+                ticketNumber: ticket,
                 existsInPdf,
                 existsInList
             });
 
         } catch (error) {
-
-            const message =
-                getErrorMessage(error);
-
             console.error(
-                '❌ Erro check-status:',
-                message
+                '❌ check-status:',
+                getErrorMessage(error)
             );
 
-            return res
-                .status(500)
-                .json({
-                    success: false,
-                    error:
-                        message
-                });
+            return res.status(500).json({
+                success: false,
+                error:
+                    getErrorMessage(error)
+            });
         }
     }
 );
 
 // ============================================================
-// UPLOAD DO PDF
+// UPLOAD PDF
 // ============================================================
 
 app.post(
     '/upload-pdf',
     async (req, res) => {
-
         try {
-
             const {
                 fileName,
                 fileBase64,
                 ticketNumber
             } = req.body;
 
-            if (!fileName) {
-
-                return res
-                    .status(400)
-                    .json({
-                        success: false,
-                        error:
-                            'fileName não informado.'
-                    });
-            }
-
-            if (!fileBase64) {
-
-                return res
-                    .status(400)
-                    .json({
-                        success: false,
-                        error:
-                            'fileBase64 não informado.'
-                    });
+            if (!fileName || !fileBase64) {
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        'fileName e fileBase64 são obrigatórios.'
+                });
             }
 
             console.log(
                 `📄 Enviando PDF: ${fileName}`
             );
 
-            if (ticketNumber) {
+            console.log(
+                `🎫 Ticket: ${ticketNumber}`
+            );
 
-                console.log(
-                    `🎫 Ticket: ${ticketNumber}`
-                );
-            }
-
-            const accessToken =
+            const token =
                 await getAccessToken();
 
             const driveId =
-                await getDriveId(
-                    accessToken
-                );
+                await getDriveId(token);
 
-            const encodedFolder =
+            const folder =
                 getEncodedFolderPath();
 
-            const encodedFileName =
-                encodeURIComponent(
-                    fileName
+            const encodedFile =
+                encodeURIComponent(fileName);
+
+            const url =
+                folder
+                    ?
+                    `https://graph.microsoft.com/v1.0/` +
+                    `drives/${driveId}/root:/` +
+                    `${folder}/${encodedFile}:/content`
+                    :
+                    `https://graph.microsoft.com/v1.0/` +
+                    `drives/${driveId}/root:/` +
+                    `${encodedFile}:/content`;
+
+            const base64 =
+                String(fileBase64).replace(
+                    /^data:application\/pdf;base64,/i,
+                    ''
                 );
-
-            let uploadUrl;
-
-            if (encodedFolder) {
-
-                uploadUrl =
-                    `https://graph.microsoft.com/v1.0/` +
-                    `drives/${driveId}/root:/` +
-                    `${encodedFolder}/` +
-                    `${encodedFileName}:/content`;
-
-            } else {
-
-                uploadUrl =
-                    `https://graph.microsoft.com/v1.0/` +
-                    `drives/${driveId}/root:/` +
-                    `${encodedFileName}:/content`;
-            }
-
-            // Aceita Base64 puro ou
-            // data:application/pdf;base64,...
-
-            const cleanBase64 =
-                String(fileBase64)
-                    .replace(
-                        /^data:application\/pdf;base64,/i,
-                        ''
-                    );
 
             const buffer =
                 Buffer.from(
-                    cleanBase64,
+                    base64,
                     'base64'
                 );
 
             const response =
                 await axios.put(
-                    uploadUrl,
+                    url,
                     buffer,
                     {
                         headers: {
                             Authorization:
-                                `Bearer ${accessToken}`,
+                                `Bearer ${token}`,
 
                             'Content-Type':
                                 'application/pdf'
@@ -1703,9 +1009,6 @@ app.post(
             return res.json({
                 success: true,
 
-                message:
-                    'PDF enviado com sucesso.',
-
                 file: {
                     id:
                         response.data.id,
@@ -1719,633 +1022,501 @@ app.post(
             });
 
         } catch (error) {
-
-            const message =
-                getErrorMessage(error);
-
             console.error(
-                '❌ Erro upload PDF:',
-                message
+                '❌ Erro PDF:',
+                getErrorMessage(error)
             );
 
-            return res
-                .status(500)
-                .json({
-                    success: false,
-                    error:
-                        message
-                });
+            return res.status(500).json({
+                success: false,
+                error:
+                    getErrorMessage(error)
+            });
         }
     }
 );
 
 // ============================================================
-// UPLOAD DOS DADOS PARA A LISTA
+// UPLOAD LISTA
 // ============================================================
 
 app.post(
     '/upload-list-data',
     async (req, res) => {
-
         try {
-
-            const ticketNumber =
-                req.body.ticketNumber ||
-                req.body.ticket ||
-                '';
-
-            const listData =
-                req.body.listData ||
-                req.body.rows ||
-                req.body.data;
+            const {
+                ticketNumber,
+                listData
+            } = req.body;
 
             if (
-                !Array.isArray(
-                    listData
-                ) ||
+                !Array.isArray(listData) ||
                 listData.length === 0
             ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        success: false,
-
-                        error:
-                            'listData não informado ou vazio.'
-                    });
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        'listData não informado.'
+                });
             }
 
             console.log(
-                `📋 Enviando ticket ${ticketNumber} ` +
-                `para a lista...`
+                `📋 Enviando ticket ${ticketNumber} para a lista...`
             );
 
-            const accessToken =
+            const token =
                 await getAccessToken();
 
             const listId =
-                await getListId(
-                    accessToken
-                );
+                await getListId(token);
 
             const columns =
                 await getListColumns(
-                    accessToken,
+                    token,
                     listId
                 );
 
-            const siteId =
-                getSiteId();
-
             let inserted = 0;
 
-            const insertedItems = [];
-
             for (
-                const row
-                of listData
+                let index = 0;
+                index < listData.length;
+                index++
             ) {
+                const row =
+                    listData[index];
 
                 const fields =
-                    buildSharePointFields(
+                    buildListFields(
                         row,
                         ticketNumber,
                         columns
                     );
 
-                if (
-                    Object.keys(
-                        fields
-                    ).length === 0
-                ) {
-
-                    throw new Error(
-                        'Nenhuma coluna compatível foi encontrada na lista SharePoint.'
-                    );
-                }
+                console.log(
+                    `📋 Linha ${index + 1}/` +
+                    `${listData.length}`
+                );
 
                 console.log(
-                    '📋 Campos que serão enviados:',
+                    '📋 Campos:',
                     Object.keys(fields)
                         .join(', ')
                 );
 
+                // Mostra tipo real das colunas.
+                for (
+                    const fieldName
+                    of Object.keys(fields)
+                ) {
+                    const column =
+                        columns.find(
+                            c =>
+                                c.name ===
+                                fieldName
+                        );
+
+                    let type =
+                        'desconhecido';
+
+                    if (column?.text) {
+                        type = 'text';
+                    } else if (column?.number) {
+                        type = 'number';
+                    } else if (column?.dateTime) {
+                        type = 'dateTime';
+                    } else if (
+                        column?.hyperlinkOrPicture
+                    ) {
+                        type =
+                            'hyperlinkOrPicture';
+                    } else if (column?.choice) {
+                        type = 'choice';
+                    }
+
+                    console.log(
+                        `   ${fieldName}: ${type}`
+                    );
+                }
+
                 const url =
                     `https://graph.microsoft.com/v1.0/` +
-                    `sites/${siteId}/lists/` +
+                    `sites/${SITE_ID}/lists/` +
                     `${listId}/items`;
 
-                const response =
-                    await axios.post(
-                        url,
-                        {
-                            fields
-                        },
-                        {
-                            headers: {
-                                Authorization:
-                                    `Bearer ${accessToken}`,
+                try {
+                    const response =
+                        await axios.post(
+                            url,
+                            {
+                                fields
+                            },
+                            {
+                                headers: {
+                                    Authorization:
+                                        `Bearer ${token}`,
 
-                                'Content-Type':
-                                    'application/json'
+                                    'Content-Type':
+                                        'application/json',
+
+                                    Accept:
+                                        'application/json'
+                                }
                             }
-                        }
+                        );
+
+                    inserted++;
+
+                    console.log(
+                        `✅ Linha ${index + 1} criada. ` +
+                        `ID: ${response.data.id}`
                     );
 
-                inserted++;
+                } catch (error) {
+                    const graph =
+                        error?.response?.data;
 
-                insertedItems.push(
-                    response.data.id
-                );
+                    console.error(
+                        '======================================'
+                    );
+
+                    console.error(
+                        `❌ ERRO LINHA ${index + 1}`
+                    );
+
+                    console.error(
+                        `❌ Ticket: ${ticketNumber}`
+                    );
+
+                    console.error(
+                        `❌ HTTP: ` +
+                        `${error?.response?.status}`
+                    );
+
+                    console.error(
+                        '❌ Campos enviados:'
+                    );
+
+                    console.error(
+                        JSON.stringify(
+                            fields,
+                            null,
+                            2
+                        )
+                    );
+
+                    console.error(
+                        '❌ Graph:'
+                    );
+
+                    console.error(
+                        JSON.stringify(
+                            graph,
+                            null,
+                            2
+                        )
+                    );
+
+                    console.error(
+                        '======================================'
+                    );
+
+                    return res.status(500).json({
+                        success: false,
+
+                        error:
+                            graph?.error?.message ||
+                            error.message,
+
+                        row:
+                            index + 1,
+
+                        graphCode:
+                            graph?.error?.code,
+
+                        requestId:
+                            graph?.error
+                                ?.innerError
+                                ?.[
+                                    'request-id'
+                                ]
+                    });
+                }
             }
 
             console.log(
-                `✅ Lista atualizada. ` +
-                `${inserted} linha(s) inserida(s).`
+                `✅ ${inserted} linha(s) ` +
+                `inserida(s) para ${ticketNumber}.`
             );
 
             return res.json({
                 success: true,
-
                 ticketNumber,
-
-                inserted,
-
-                itemIds:
-                    insertedItems
+                inserted
             });
 
         } catch (error) {
-
-            const message =
-                getErrorMessage(error);
-
             console.error(
                 '❌ Erro upload lista:',
-                message
+                getErrorMessage(error)
             );
 
-            if (
-                error?.response?.data
-            ) {
-
-                console.error(
-                    '❌ Retorno Graph:',
-                    JSON.stringify(
-                        error.response.data
-                    )
-                );
-            }
-
-            return res
-                .status(500)
-                .json({
-                    success: false,
-                    error:
-                        message
-                });
+            return res.status(500).json({
+                success: false,
+                error:
+                    getErrorMessage(error)
+            });
         }
     }
 );
 
 // ============================================================
-// EXCLUI TODOS OS PDFs DE UM TICKET
+// DELETE PDFs DO TICKET
 // ============================================================
 
 app.delete(
     '/delete-pdf-by-ticket-number/:ticketNumber',
     async (req, res) => {
-
         try {
-
-            const ticketNumber =
+            const ticket =
                 normalizeTicket(
                     req.params.ticketNumber
                 );
 
-            if (!ticketNumber) {
-
-                return res
-                    .status(400)
-                    .json({
-                        success: false,
-                        error:
-                            'Número do ticket não informado.'
-                    });
-            }
-
-            const accessToken =
+            const token =
                 await getAccessToken();
 
             const driveId =
-                await getDriveId(
-                    accessToken
-                );
+                await getDriveId(token);
 
             const files =
                 await getAllFilesFromFolder(
-                    accessToken,
+                    token,
                     driveId
                 );
 
-            const matchingFiles =
+            const matching =
                 files.filter(
                     file =>
                         file.file &&
                         extractTicketNumber(
                             file.name
-                        ) ===
-                        ticketNumber
+                        ) === ticket
                 );
 
             let deleted = 0;
 
-            const deletedFiles = [];
-
-            for (
-                const file
-                of matchingFiles
-            ) {
-
-                const url =
+            for (const file of matching) {
+                await axios.delete(
                     `https://graph.microsoft.com/v1.0/` +
                     `drives/${driveId}/items/` +
-                    `${file.id}`;
-
-                await axios.delete(
-                    url,
+                    `${file.id}`,
                     {
                         headers: {
                             Authorization:
-                                `Bearer ${accessToken}`
+                                `Bearer ${token}`
                         }
                     }
                 );
 
                 deleted++;
-
-                deletedFiles.push(
-                    file.name
-                );
-
-                console.log(
-                    `🗑️ PDF excluído: ${file.name}`
-                );
             }
 
             return res.json({
                 success: true,
-                ticketNumber,
-                deleted,
-                deletedFiles
+                ticketNumber: ticket,
+                deleted
             });
 
         } catch (error) {
-
-            const message =
-                getErrorMessage(error);
-
-            console.error(
-                '❌ Erro exclusão PDF:',
-                message
-            );
-
-            return res
-                .status(500)
-                .json({
-                    success: false,
-                    error:
-                        message
-                });
+            return res.status(500).json({
+                success: false,
+                error:
+                    getErrorMessage(error)
+            });
         }
     }
 );
 
 // ============================================================
-// LIMPA PDFs DUPLICADOS
-// ============================================================
-//
-// IMPORTANTE:
-//
-// Esta função NÃO exclui registros da lista.
-//
-// Ela somente verifica PDFs na biblioteca.
-//
-// Para cada ticket mantém o arquivo
-// mais recentemente modificado.
-//
+// LIMPAR PDFs DUPLICADOS
 // ============================================================
 
 app.post(
     '/cleanup-duplicate-pdfs',
     async (req, res) => {
-
         try {
-
-            console.log(
-                '🧹 Iniciando verificação de PDFs duplicados...'
-            );
-
-            const accessToken =
+            const token =
                 await getAccessToken();
 
             const driveId =
-                await getDriveId(
-                    accessToken
-                );
+                await getDriveId(token);
 
             const files =
                 await getAllFilesFromFolder(
-                    accessToken,
+                    token,
                     driveId
                 );
 
-            console.log(
-                `📂 ${files.length} arquivo(s) localizado(s).`
-            );
-
-            const ticketGroups =
+            const groups =
                 new Map();
 
-            for (
-                const file
-                of files
-            ) {
-
-                // Ignora pastas
-
+            for (const file of files) {
                 if (!file.file) {
-
                     continue;
                 }
 
-                // Ignora arquivos não PDF
-
-                if (
-                    !file.name ||
-                    !file.name
-                        .toLowerCase()
-                        .endsWith('.pdf')
-                ) {
-
-                    continue;
-                }
-
-                const ticketNumber =
+                const ticket =
                     extractTicketNumber(
                         file.name
                     );
 
-                // Arquivo não reconhecido.
-                // Não toca nele.
-
-                if (!ticketNumber) {
-
-                    console.log(
-                        `ℹ️ PDF ignorado: ${file.name}`
-                    );
-
+                if (!ticket) {
                     continue;
                 }
 
-                if (
-                    !ticketGroups.has(
-                        ticketNumber
-                    )
-                ) {
-
-                    ticketGroups.set(
-                        ticketNumber,
+                if (!groups.has(ticket)) {
+                    groups.set(
+                        ticket,
                         []
                     );
                 }
 
-                ticketGroups
-                    .get(ticketNumber)
+                groups
+                    .get(ticket)
                     .push(file);
             }
 
-            const duplicates = [];
-            const keptFiles = [];
             const deletedFiles = [];
+            const keptFiles = [];
 
             for (
                 const [
-                    ticketNumber,
+                    ticket,
                     ticketFiles
                 ]
-                of ticketGroups.entries()
+                of groups
             ) {
-
                 if (
                     ticketFiles.length <= 1
                 ) {
-
                     continue;
                 }
 
-                console.log(
-                    `⚠️ ${ticketNumber}: ` +
-                    `${ticketFiles.length} PDFs encontrados.`
-                );
-
-                // Ordena do mais novo
-                // para o mais antigo.
-
                 ticketFiles.sort(
-                    (a, b) => {
-
-                        const dateA =
-                            new Date(
-                                a.lastModifiedDateTime ||
-                                a.createdDateTime ||
-                                0
-                            ).getTime();
-
-                        const dateB =
-                            new Date(
-                                b.lastModifiedDateTime ||
-                                b.createdDateTime ||
-                                0
-                            ).getTime();
-
-                        return (
-                            dateB -
-                            dateA
-                        );
-                    }
+                    (a, b) =>
+                        new Date(
+                            b.lastModifiedDateTime ||
+                            b.createdDateTime
+                        ).getTime() -
+                        new Date(
+                            a.lastModifiedDateTime ||
+                            a.createdDateTime
+                        ).getTime()
                 );
 
-                const keepFile =
+                const keep =
                     ticketFiles[0];
 
-                const filesToDelete =
-                    ticketFiles.slice(1);
-
                 keptFiles.push({
-                    ticketNumber,
+                    ticket,
                     fileName:
-                        keepFile.name,
-
-                    modified:
-                        keepFile
-                            .lastModifiedDateTime
+                        keep.name
                 });
-
-                duplicates.push({
-                    ticketNumber,
-
-                    total:
-                        ticketFiles.length,
-
-                    keep:
-                        keepFile.name,
-
-                    delete:
-                        filesToDelete.map(
-                            file =>
-                                file.name
-                        )
-                });
-
-                console.log(
-                    `✅ ${ticketNumber}: mantendo ${keepFile.name}`
-                );
 
                 for (
                     const file
-                    of filesToDelete
+                    of ticketFiles.slice(1)
                 ) {
-
-                    const url =
+                    await axios.delete(
                         `https://graph.microsoft.com/v1.0/` +
                         `drives/${driveId}/items/` +
-                        `${file.id}`;
-
-                    await axios.delete(
-                        url,
+                        `${file.id}`,
                         {
                             headers: {
                                 Authorization:
-                                    `Bearer ${accessToken}`
+                                    `Bearer ${token}`
                             }
                         }
                     );
 
                     deletedFiles.push({
-                        ticketNumber,
+                        ticket,
                         fileName:
                             file.name
                     });
 
                     console.log(
-                        `🗑️ Duplicado removido: ${file.name}`
+                        `🗑️ Duplicado removido: ` +
+                        `${file.name}`
                     );
                 }
             }
 
-            console.log(
-                `✅ Limpeza concluída. ` +
-                `${deletedFiles.length} arquivo(s) removido(s).`
-            );
-
             return res.json({
                 success: true,
-
-                message:
-                    `${deletedFiles.length} ` +
-                    `PDF(s) duplicado(s) removido(s).`,
 
                 totalFilesChecked:
                     files.length,
 
                 ticketsChecked:
-                    ticketGroups.size,
-
-                ticketsWithDuplicates:
-                    duplicates.length,
+                    groups.size,
 
                 deletedCount:
                     deletedFiles.length,
 
-                duplicates,
                 keptFiles,
                 deletedFiles
             });
 
         } catch (error) {
-
-            const message =
-                getErrorMessage(error);
-
             console.error(
-                '❌ Erro limpeza de duplicados:',
-                message
+                '❌ Limpeza:',
+                getErrorMessage(error)
             );
 
-            return res
-                .status(500)
-                .json({
-                    success: false,
-                    error:
-                        message
-                });
+            return res.status(500).json({
+                success: false,
+                error:
+                    getErrorMessage(error)
+            });
         }
     }
 );
 
 // ============================================================
-// LIMPAR TODA A LISTA
+// LIMPAR LISTA COMPLETA
 // ============================================================
 //
-// ATENÇÃO:
-//
-// Esta rota APAGA TODOS OS ITENS
-// da lista SharePoint.
-//
-// Ela NÃO é chamada pela limpeza
-// de PDFs duplicados.
+// CUIDADO:
+// esta rota continua existindo para compatibilidade.
+// Ela apaga TODOS os registros da lista.
+// Não é usada pela limpeza de PDFs duplicados.
 //
 // ============================================================
 
 app.delete(
     '/clear-list',
     async (req, res) => {
-
         try {
-
-            console.log(
-                '⚠️ Iniciando exclusão TOTAL da lista...'
-            );
-
-            const accessToken =
+            const token =
                 await getAccessToken();
 
             const listId =
-                await getListId(
-                    accessToken
-                );
-
-            const siteId =
-                getSiteId();
+                await getListId(token);
 
             let deleted = 0;
 
             while (true) {
-
-                const url =
-                    `https://graph.microsoft.com/v1.0/` +
-                    `sites/${siteId}/lists/` +
-                    `${listId}/items?$top=200`;
-
                 const response =
                     await axios.get(
-                        url,
+                        `https://graph.microsoft.com/v1.0/` +
+                        `sites/${SITE_ID}/lists/` +
+                        `${listId}/items?$top=200`,
                         {
                             headers: {
                                 Authorization:
-                                    `Bearer ${accessToken}`
+                                    `Bearer ${token}`
                             }
                         }
                     );
@@ -2353,103 +1524,75 @@ app.delete(
                 const items =
                     response.data.value || [];
 
-                if (
-                    items.length === 0
-                ) {
-
+                if (!items.length) {
                     break;
                 }
 
-                for (
-                    const item
-                    of items
-                ) {
-
-                    const deleteUrl =
-                        `https://graph.microsoft.com/v1.0/` +
-                        `sites/${siteId}/lists/` +
-                        `${listId}/items/` +
-                        `${item.id}`;
-
+                for (const item of items) {
                     await axios.delete(
-                        deleteUrl,
+                        `https://graph.microsoft.com/v1.0/` +
+                        `sites/${SITE_ID}/lists/` +
+                        `${listId}/items/` +
+                        `${item.id}`,
                         {
                             headers: {
                                 Authorization:
-                                    `Bearer ${accessToken}`
+                                    `Bearer ${token}`
                             }
                         }
                     );
 
                     deleted++;
                 }
-
-                console.log(
-                    `🗑️ ${deleted} registro(s) removido(s)...`
-                );
             }
 
             return res.json({
                 success: true,
-                deleted,
-
-                message:
-                    `${deleted} registro(s) removido(s).`
+                deleted
             });
 
         } catch (error) {
-
-            const message =
-                getErrorMessage(error);
-
-            console.error(
-                '❌ Erro clear-list:',
-                message
-            );
-
-            return res
-                .status(500)
-                .json({
-                    success: false,
-                    error:
-                        message
-                });
+            return res.status(500).json({
+                success: false,
+                error:
+                    getErrorMessage(error)
+            });
         }
     }
 );
 
 // ============================================================
-// ROTA NÃO ENCONTRADA
+// 404
 // ============================================================
 
-app.use(
-    (req, res) => {
-
-        res.status(404).json({
-            success: false,
-
-            error:
-                `Rota não encontrada: ` +
-                `${req.method} ${req.originalUrl}`
-        });
-    }
-);
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        error:
+            `Rota não encontrada: ` +
+            `${req.method} ${req.originalUrl}`
+    });
+});
 
 // ============================================================
-// INICIA SERVIDOR
+// START
 // ============================================================
 
 app.listen(
     PORT,
     '0.0.0.0',
     () => {
+        console.log(
+            '🚀 API SharePoint Global Plastic'
+        );
 
         console.log(
             `🌐 API online na porta ${PORT}`
         );
 
         console.log(
-            `🔗 SITE_ID configurado: ${Boolean(SITE_ID)}`
+            `🔗 SITE_ID: ` +
+            `${SITE_ID ? 'OK' : 'NÃO CONFIGURADO'}`
         );
 
         console.log(
